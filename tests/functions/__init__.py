@@ -1,0 +1,1 @@
+"""Azure Functions adapter tests."""

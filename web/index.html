@@ -1,0 +1,2041 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Azure Capacity — Admin</title>
+  <link rel="stylesheet" href="styles/base.css" />
+  <link rel="stylesheet" href="styles/controls.css" />
+  <link rel="stylesheet" href="styles/vm-coverage.css" />
+  <link rel="stylesheet" href="styles/drawers.css" />
+  <link rel="stylesheet" href="styles/responsive.css" />
+  <link rel="icon" href="data:," />
+  <script src="echarts.min.js"></script>
+  <script src="js/shared/resources.js"></script>
+  <script src="js/shared/http.js"></script>
+  <script src="js/shared/tables.js"></script>
+  <script src="js/shared/csv.js"></script>
+  <script src="js/shared/business-context.js"></script>
+  <script src="js/shared/report-model.js"></script>
+  <script src="js/shared/echarts-adapter.js"></script>
+  <script src="js/shared/preference-store.js"></script>
+  <script src="js/features/odcr-usage-model.js"></script>
+  <script src="js/features/odcr-usage.js"></script>
+  <script src="js/features/coverage-report-model.js"></script>
+  <script src="js/features/notifications.js"></script>
+  <script src="js/features/administration.js"></script>
+  <script src="js/features/data-collection.js"></script>
+  <script src="js/features/scope.js"></script>
+  <script src="js/features/vm-coverage.js"></script>
+  <script src="js/features/vm-coverage-charts.js"></script>
+  <script src="js/features/coverage-editor.js"></script>
+  <script src="app.js"></script>
+  <script defer src="alpine.min.js"></script>
+</head>
+<body>
+  <div class="layout" x-data="app()" x-cloak
+    @keydown.escape.window="notificationDrawerOpen = false; accountMenuOpen = false; scopeMenuOpen = false">
+    <header class="global-header">
+      <div class="header-brand">
+        <span>Azure Capacity</span>
+        <span x-show="user.local" class="environment-badge">Local dev</span>
+      </div>
+      <div class="header-actions">
+        <div class="scope-control" x-show="user.capabilities.useOdcr" @click.outside="if (scopeMenuOpen) closeScopeMenu()">
+          <button type="button" class="header-icon-button scope-button" title="Global filters"
+            :class="{ active: scopeMenuOpen || globalScopeActive }" @click="scopeMenuOpen ? closeScopeMenu() : openScopeMenu()"
+            :aria-expanded="scopeMenuOpen" aria-label="Edit global filters">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 5h16M7 12h10M10 19h4" />
+              <circle cx="7" cy="5" r="1.5" /><circle cx="15" cy="12" r="1.5" /><circle cx="12" cy="19" r="1.5" />
+            </svg>
+            <span x-show="globalScopeActive" class="scope-active-dot"></span>
+          </button>
+          <div class="scope-menu" x-show="scopeMenuOpen" x-transition.opacity>
+            <div class="scope-menu-head">
+              <div>
+                <strong>Global filters</strong>
+              </div>
+              <button type="button" class="icon-btn" @click="loadScopeInventory()"
+                :disabled="scopeInventoryLoading" title="Refresh filter catalogue" aria-label="Refresh filter catalogue">
+                <span :class="{ spinning: scopeInventoryLoading }" aria-hidden="true">&#8635;</span>
+              </button>
+            </div>
+            <div class="scope-loading" x-show="scopeInventoryLoading && !scopeInventoryLoaded">Loading filter catalogue...</div>
+            <div class="scope-error" x-show="scopeInventoryError">
+              <span x-text="scopeInventoryError"></span>
+              <button type="button" class="btn ghost" @click="loadScopeInventory()">Retry</button>
+            </div>
+            <div class="scope-menu-body" x-show="scopeInventoryLoaded">
+              <template x-for="dimension in [
+                { key: 'subscriptionIds', catalogue: 'subscriptions', label: 'Subscription' },
+                { key: 'locations', catalogue: 'locations', label: 'Location' }
+              ]" :key="dimension.key">
+                <section class="scope-selector">
+                  <div class="scope-selector-head">
+                    <label class="scope-enable-toggle">
+                      <input type="checkbox" role="switch" :checked="scopeDimensionEnabled(dimension.key)"
+                        @change="setScopeDimensionEnabled(dimension.key, $event.target.checked)" />
+                      <span class="scope-toggle-track" aria-hidden="true"></span>
+                      <strong x-text="dimension.label"></strong>
+                    </label>
+                    <span x-show="scopeDimensionEnabled(dimension.key)"
+                      x-text="(globalScopeDraft[dimension.key] || []).length + ' selected'"></span>
+                  </div>
+                  <div x-show="scopeDimensionEnabled(dimension.key)" class="scope-selector-content">
+                    <input x-model="scopeSearch[dimension.catalogue]" type="search" class="multi-select-search"
+                      :placeholder="'Search ' + dimension.label.toLocaleLowerCase() + 's'"
+                      :aria-label="'Search ' + dimension.label.toLocaleLowerCase() + 's'" />
+                    <label class="multi-select-option select-all">
+                      <input type="checkbox"
+                        :checked="(globalScopeDraft[dimension.key] || []).length === scopeCatalogue[dimension.catalogue].length"
+                        :indeterminate.prop="(globalScopeDraft[dimension.key] || []).length > 0 && (globalScopeDraft[dimension.key] || []).length < scopeCatalogue[dimension.catalogue].length"
+                        @change="toggleAllScopeDimensionValues(dimension.key)" />
+                      <span x-text="'All ' + dimension.label.toLocaleLowerCase() + 's'"></span>
+                    </label>
+                    <div class="scope-options">
+                      <template x-for="option in scopeOptions(dimension.catalogue)" :key="option.value">
+                        <label class="multi-select-option">
+                          <input type="checkbox" :checked="(globalScopeDraft[dimension.key] || []).includes(option.value)"
+                            @change="toggleScopeDimensionValue(dimension.key, option.value, $event.target.checked)" />
+                          <span class="scope-option-name" x-text="option.label" :title="option.secondaryLabel"></span>
+                          <span class="scope-option-count mono" x-text="option.secondaryLabel"></span>
+                        </label>
+                      </template>
+                      <div class="multi-select-empty" x-show="scopeOptions(dimension.catalogue).length === 0">No matching options</div>
+                    </div>
+                  </div>
+                </section>
+              </template>
+              <template x-for="field in scopeCatalogue.contextFields" :key="field.fieldKey">
+                <section class="scope-selector">
+                  <div class="scope-selector-head">
+                    <label class="scope-enable-toggle">
+                      <input type="checkbox" role="switch" :checked="scopeContextCriterion(field.fieldKey) !== null"
+                        @change="setScopeContextEnabled(field.fieldKey, $event.target.checked)" />
+                      <span class="scope-toggle-track" aria-hidden="true"></span>
+                      <strong x-text="field.name"></strong>
+                    </label>
+                    <span x-show="scopeContextCriterion(field.fieldKey)"
+                      x-text="(scopeContextCriterion(field.fieldKey)?.values || []).length + ' selected'"></span>
+                  </div>
+                  <div x-show="scopeContextCriterion(field.fieldKey)" class="scope-selector-content">
+                    <input x-model="scopeSearch.context[field.fieldKey]" type="search" class="multi-select-search"
+                      :placeholder="'Search ' + field.name" :aria-label="'Search ' + field.name" />
+                    <div class="scope-options">
+                      <template x-for="option in scopeContextOptions(field)" :key="option.value === null ? '__not_mapped__' : option.value">
+                        <label class="multi-select-option">
+                          <input type="checkbox" :checked="(scopeContextCriterion(field.fieldKey)?.values || []).includes(option.value)"
+                            @change="toggleScopeContextValue(field.fieldKey, option.value, $event.target.checked)" />
+                          <span class="scope-option-name" x-text="option.label"></span>
+                          <span class="scope-option-count" x-text="option.subscriptionCount + ' subs'"></span>
+                        </label>
+                      </template>
+                    </div>
+                  </div>
+                </section>
+              </template>
+            </div>
+            <div class="scope-menu-actions">
+              <button type="button" class="btn" @click="applyGlobalScope()"
+                :disabled="!scopeInventoryLoaded || scopeInventoryLoading || !globalScopeDraftValid">Save</button>
+              <button type="button" class="btn ghost" @click="closeScopeMenu()">Cancel</button>
+            </div>
+          </div>
+        </div>
+        <button type="button" class="header-icon-button notification-button" x-show="user.capabilities.administer" title="Notifications"
+          @click="notificationDrawerOpen = true; accountMenuOpen = false; scopeMenuOpen = false" aria-label="Open notifications">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></svg>
+          <span x-show="runningCount > 0" class="notification-count" x-text="runningCount"></span>
+        </button>
+        <div class="account" @click.outside="accountMenuOpen = false">
+          <button type="button" class="account-trigger" @click="accountMenuOpen = !accountMenuOpen; notificationDrawerOpen = false; scopeMenuOpen = false"
+            :aria-expanded="accountMenuOpen" aria-label="Open user menu">
+            <span class="account-avatar" x-text="user.name && user.name !== '…' ? user.name.charAt(0).toUpperCase() : '•'"></span>
+            <span class="account-trigger-copy">
+              <strong x-text="user.name"></strong>
+              <small x-text="user.local ? user.detail : (user.authenticated ? 'Signed in' : user.detail)"></small>
+            </span>
+            <svg class="account-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+          </button>
+          <div class="account-menu" x-show="accountMenuOpen" x-transition.opacity>
+            <div class="account-menu-identity">
+              <span class="account-avatar large" x-text="user.name && user.name !== '…' ? user.name.charAt(0).toUpperCase() : '•'"></span>
+              <div>
+                <strong x-text="user.name"></strong>
+                <span x-text="user.detail"></span>
+                <span x-text="user.roles.length ? user.roles.join(', ') : 'No application role'"></span>
+              </div>
+            </div>
+            <div class="local-role-switcher" x-show="user.local">
+              <span>Local role context</span>
+              <div role="group" aria-label="Local role context">
+                <template x-for="role in ['Admin', 'User', 'None']" :key="role">
+                  <button type="button" class="btn ghost" :class="{ active: role === 'None' ? user.roles.length === 0 : user.roles.includes(role) }"
+                    :disabled="localRoleSwitching" @click="switchLocalRole(role)" x-text="role"></button>
+                </template>
+              </div>
+            </div>
+            <button type="button" class="account-logout" @click="logout()" :disabled="!user.authenticated">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" /></svg>
+              <span>Log out</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <aside class="sidebar" aria-label="Primary navigation">
+      <nav class="nav">
+        <a x-show="user.capabilities.useOdcr" :class="{ active: page === 'vm' }" @click="go('odcr/coverage')" title="On-Demand Capacity Reservations">
+          <span class="nav-icon"><img src="icons/capacity-reservation-groups.svg" alt="" /></span>
+          <span class="nav-label">ODCR</span>
+        </a>
+        <a class="settings-link" x-show="user.capabilities.administer" :class="{ active: page === 'settings' }" @click="go('settings')" title="Settings">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.09v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg></span>
+          <span class="nav-label">Settings</span>
+        </a>
+      </nav>
+    </aside>
+
+    <!-- ── Main ────────────────────────────────────────────── -->
+    <main class="main">
+      <!-- Toasts (API errors, etc.) -->
+      <div class="toasts">
+        <template x-for="t in toasts" :key="t.id">
+          <div class="toast" :class="t.kind">
+            <span x-text="t.message"></span>
+            <button class="toast-close" @click="dismissToast(t.id)" aria-label="Dismiss">&times;</button>
+          </div>
+        </template>
+      </div>
+
+      <template x-if="page === 'forbidden'">
+        <div class="card access-denied">
+          <h1>Access denied</h1>
+          <p>This account does not have a recognized User or Admin application role.</p>
+          <p x-show="user.local">Choose a local role context from the account menu to continue.</p>
+        </div>
+      </template>
+
+      <!-- Settings -->
+      <template x-if="page === 'settings'">
+        <div>
+          <h1>Settings</h1>
+
+          <div class="tabs">
+            <button :class="{ active: tab === 'app' }" @click="selectTab('app')">App settings</button>
+            <button :class="{ active: tab === 'app-scope' }" @click="selectTab('app-scope')">App Scope</button>
+            <button :class="{ active: tab === 'data' }" @click="selectTab('data')">Data Collection</button>
+            <button :class="{ active: tab === 'business-context' }" @click="selectTab('business-context')">Business Context</button>
+          </div>
+
+          <!-- Tab: App settings -->
+          <template x-if="tab === 'app'">
+            <div>
+              <template x-if="!settings"><div class="empty"><span class="spin"></span> Loading…</div></template>
+              <template x-if="settings">
+                <div>
+                  <template x-for="group in settingsGroups" :key="group.title">
+                    <div class="card">
+                      <div class="card-head"><h3 x-text="group.title"></h3></div>
+                      <table>
+                        <tbody>
+                          <template x-for="row in group.rows" :key="row.key">
+                            <tr>
+                              <td class="key" x-text="row.key"></td>
+                              <td class="mono" x-text="row.value"></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Tab: App Scope -->
+          <template x-if="tab === 'app-scope'">
+            <div>
+              <template x-if="!appScope"><div class="empty"><span class="spin"></span> Loading…</div></template>
+              <template x-if="appScope">
+                <div>
+                  <!-- Subscription scope -->
+                  <div class="card">
+                    <div class="card-head">
+                      <div class="title-row">
+                        <h3>Subscription scope</h3>
+                        <button class="icon-btn" title="Refresh status" @click="loadAppScope()"
+                          :class="{ spinning: appScopeLoading }" :disabled="appScopeLoading"
+                          aria-label="Refresh status">&#8635;</button>
+                      </div>
+                      <div class="actions">
+                        <span x-show="appScopeLoading" class="badge running"><span class="spin"></span> Loading…</span>
+                        <span x-show="!appScopeLoading" class="badge" :class="appScopeHealth.badge" x-text="appScopeHealth.label"></span>
+                      </div>
+                    </div>
+                    <template x-if="appScopeError">
+                      <div class="error" x-text="'App Scope diagnostics unavailable: ' + appScopeError"></div>
+                    </template>
+                    <template x-if="!appScopeError">
+                      <div>
+                        <div :class="appScopeHealth.state === 'ok' ? 'muted' : appScopeHealth.state"
+                          x-text="appScopeHealth.message"></div>
+                        <table>
+                          <tbody>
+                            <tr>
+                              <td class="key">Mode</td>
+                              <td class="mono" x-text="appScope.modeLabel"></td>
+                            </tr>
+                            <tr>
+                              <td class="key">Resolved subscriptions</td>
+                              <td class="mono" x-text="appScope.resolvedCount ?? '—'"></td>
+                            </tr>
+                            <tr>
+                              <td class="key">Reference data generation</td>
+                              <td class="mono" x-text="appScope.enforced.generation || '—'"></td>
+                            </tr>
+                            <tr>
+                              <td class="key">Reference data published</td>
+                              <td class="mono" x-text="appScope.enforced.publishedAt ? formatDateTime(appScope.enforced.publishedAt) : '—'"></td>
+                            </tr>
+                            <tr>
+                              <td class="key">Reference data stale</td>
+                              <td><span class="badge" :class="appScope.enforced.stale ? 'warn' : 'ok'"
+                                x-text="appScope.enforced.stale ? 'Yes' : 'No'"></span></td>
+                            </tr>
+                          </tbody>
+                        </table>
+
+                        <!-- Selected subscriptions breakdown -->
+                        <template x-if="appScope.mode === 'subscriptions'">
+                          <div>
+                            <div class="muted" x-text="appScopeResolvedSummary"></div>
+                            <table>
+                              <thead><tr><th>Subscription ID</th><th>Status</th><th>Display name</th></tr></thead>
+                              <tbody>
+                                <template x-for="row in appScope.subscriptions" :key="row.id">
+                                  <tr>
+                                    <td class="mono" x-text="row.id"></td>
+                                    <td><span class="badge" :class="row.resolved ? 'ok' : 'warn'"
+                                      x-text="row.resolved ? 'Resolved' : 'Unresolved'"></span></td>
+                                    <td class="mono" x-text="row.displayName || '—'"></td>
+                                  </tr>
+                                </template>
+                              </tbody>
+                            </table>
+                          </div>
+                        </template>
+
+                        <!-- Selected management groups breakdown -->
+                        <template x-if="appScope.mode === 'management_groups'">
+                          <table>
+                            <thead><tr><th>Management group ID</th><th>Resolved subscriptions</th></tr></thead>
+                            <tbody>
+                              <template x-for="row in appScope.managementGroups" :key="row.id">
+                                <tr>
+                                  <td class="mono" x-text="row.id"></td>
+                                  <td><span class="badge" :class="row.count === 0 ? 'warn' : 'ok'" x-text="row.count"></span></td>
+                                </tr>
+                              </template>
+                            </tbody>
+                          </table>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+
+                  <!-- Location scope -->
+                  <div class="card">
+                    <div class="card-head"><h3>Location scope</h3></div>
+                    <table>
+                      <tbody>
+                        <tr>
+                          <td class="key">Configured locations</td>
+                          <td class="mono" x-text="(appScope.locations && appScope.locations.length) ? appScope.locations.join(', ') : 'All locations'"></td>
+                        </tr>
+                        <tr>
+                          <td class="key">Location boundary</td>
+                          <td class="mono" x-text="(appScope.locations && appScope.locations.length) ? (appScope.locations.length + ' location' + (appScope.locations.length === 1 ? '' : 's')) : 'All locations'"></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <!-- Administrator guidance -->
+                  <div class="card">
+                    <div class="card-head"><h3>Administrator guidance</h3></div>
+                    <ol class="app-scope-guidance">
+                      <li>Update <code>SCOPE_SUBSCRIPTION_IDS</code> or <code>SCOPE_MANAGEMENT_GROUP_IDS</code>.</li>
+                      <li>Update <code>SCOPE_LOCATIONS</code> when the location boundary must change.</li>
+                      <li>Refresh Subscription Reference Data if a selector is unresolved because the inventory is stale.</li>
+                      <li>Restart the Function App for new environment values to take effect.</li>
+                    </ol>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Tab: Business Context -->
+          <template x-if="tab === 'business-context'">
+            <section class="business-context-panel">
+              <div class="business-context-command-bar">
+                <h2>Context fields</h2>
+              </div>
+
+              <div x-show="businessContextLoading" class="empty"><span class="spin"></span> Loading…</div>
+              <template x-if="businessContext && !businessContextLoading">
+                <div class="card business-context-card">
+                  <div class="vm-command-bar">
+                    <button type="button" class="vm-command-button" @click="openBusinessContextEditor()"
+                      :disabled="!businessContext || businessContext.count >= businessContext.maxFields">
+                      <span class="vm-command-icon" aria-hidden="true">&#43;</span>
+                      <span>Add field</span>
+                    </button>
+                    <button type="button" class="vm-command-button" @click="loadBusinessContextFields()"
+                      :disabled="businessContextLoading">
+                      <span class="vm-command-icon" :class="{ spinning: businessContextLoading }" aria-hidden="true">&#8635;</span>
+                      <span>Refresh</span>
+                    </button>
+                  </div>
+                  <div x-show="businessContext.value.length === 0" class="empty">No context fields configured.</div>
+                  <div class="vm-table-frame bc-fields-frame" x-show="businessContext.value.length > 0">
+                    <div class="vm-table-scroll">
+                      <table class="vm-table bc-fields-table">
+                        <thead><tr><th>Name</th><th>Field key</th><th>Value source</th><th>Status</th><th>Last updated</th><th></th></tr></thead>
+                        <tbody>
+                          <template x-for="field in businessContext.value" :key="field.key">
+                            <tr>
+                              <td><strong x-text="field.name"></strong></td>
+                              <td class="mono" x-text="field.key"></td>
+                              <td x-text="businessContextSourceLabel(field)"></td>
+                              <td><span class="badge" :class="field.enabled ? 'ok' : 'muted'"
+                                x-text="field.enabled ? 'Enabled' : 'Disabled'"></span></td>
+                              <td class="mono" x-text="field.updatedAt ? formatDateTime(field.updatedAt) : '—'"></td>
+                              <td class="actions"><button type="button" class="btn ghost" @click="openBusinessContextEditor(field)">Edit</button></td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                    <div class="vm-table-footer">
+                      <div class="vm-footer-left"
+                        x-text="`${businessContext.count} of ${businessContext.maxFields} configured`"></div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+            </section>
+          </template>
+
+          <!-- Tab: Data Collection -->
+          <template x-if="tab === 'data'">
+            <div>
+              <!-- Schedule (runtime-editable cadence + enablement) -->
+              <div class="card">
+                <div class="card-head">
+                  <div class="title-row">
+                    <h3>Data Collection Schedule</h3>
+                  </div>
+                </div>
+                <div class="vm-command-bar">
+                  <button type="button" class="vm-command-button" @click="loadPipelines()"
+                    :disabled="dcPipelinesLoading">
+                    <span class="vm-command-icon" :class="{ spinning: dcPipelinesLoading }" aria-hidden="true">&#8635;</span>
+                    <span>Refresh</span>
+                  </button>
+                  <button type="button" class="vm-command-button" @click="resetPipelineDefaults()"
+                    :disabled="dcResetting || dcPipelinesLoading">
+                    <span class="vm-command-icon" :class="{ spinning: dcResetting }" aria-hidden="true">&#8634;</span>
+                    <span>Reset defaults</span>
+                  </button>
+                </div>
+                <template x-if="dcPipelinesError">
+                  <div class="error" x-text="'Could not load schedule: ' + dcPipelinesError"></div>
+                </template>
+                <template x-if="dcPipelines && dcPipelines.length">
+                  <div class="vm-table-frame dc-schedule-frame">
+                    <div class="vm-table-scroll">
+                      <table class="vm-table dc-schedule-table">
+                        <thead>
+                          <tr>
+                            <th>Pipeline</th>
+                            <th>Frequency</th>
+                            <th>Last run</th>
+                            <th>Status</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="row in dcPipelines" :key="row.id">
+                            <tr>
+                              <td x-text="row.name"></td>
+                              <td>
+                                <span class="editable-cell">
+                                  <span x-text="dcFrequencyText(row)"></span>
+                                  <button type="button" class="coverage-edit-button" @click.stop="openPipelineConfig(row)"
+                                    title="Edit schedule" aria-label="Edit schedule">&#9998;</button>
+                                </span>
+                              </td>
+                              <td>
+                                <span class="dc-lastrun">
+                                  <span x-text="row.lastCompletedAt ? relativeTimeText(row.lastCompletedAt, { short: true }) : '—'"
+                                    :title="row.lastCompletedAt ? formatDateTime(row.lastCompletedAt) : ''"></span>
+                                  <span x-show="pipelineDue(row)" class="dc-due-icon"
+                                    :title="row.nextDueAt ? ('Due to run — scheduled ' + formatDateTime(row.nextDueAt)) : 'Due to run'"
+                                    aria-label="Due to run">&#9200;</span>
+                                </span>
+                              </td>
+                              <td>
+                                <span class="badge" :class="collectorStatusDisplay(row.running, row.lastOutcome, row.progress).cls"
+                                  :title="collectorStatusDisplay(row.running, row.lastOutcome, row.progress).title">
+                                  <span x-show="row.running" class="spin"></span>
+                                  <span x-text="collectorStatusDisplay(row.running, row.lastOutcome, row.progress).text"></span>
+                                </span>
+                              </td>
+                              <td>
+                                <div class="row-actions">
+                                  <button class="btn" :disabled="row.running" @click="runOp(row.id, 'refresh')">Refresh</button>
+                                  <button class="btn danger" x-show="row.supportsFlush" :disabled="row.running"
+                                    @click="confirmFlush(row)">Flush</button>
+                                  <button class="icon-btn" @click="openDetails(row)" title="Details" aria-label="Details">&#9432;</button>
+                                </div>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </template>
+                <template x-if="dcPipelines && !dcPipelines.length && !dcPipelinesError">
+                  <div class="placeholder">No pipelines registered.</div>
+                </template>
+                <template x-if="!dcPipelines && !dcPipelinesError">
+                  <div class="placeholder">Loading schedule…</div>
+                </template>
+              </div>
+
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- On-Demand Capacity Reservations -->
+      <template x-if="page === 'vm'">
+        <div class="vm-page">
+          <div class="page-head">
+            <div>
+              <h1>On-Demand Capacity Reservations</h1>
+            </div>
+          </div>
+
+          <div class="tabs">
+            <button :class="{ active: odcrTab === 'coverage' }" @click="selectOdcrTab('coverage')">ODCR Coverage</button>
+            <button :class="{ active: odcrTab === 'usage' }" @click="selectOdcrTab('usage')">ODCR Usage</button>
+          </div>
+
+          <div x-show="odcrTab === 'coverage'" class="card vm-card">
+            <div class="vm-command-bar">
+              <button type="button" class="vm-command-button" @click="loadVms()" :disabled="vmsLoading">
+                <span class="vm-command-icon" :class="{ spinning: vmsLoading }" aria-hidden="true">&#8635;</span>
+                <span>Refresh</span>
+              </button>
+              <button type="button" class="vm-command-button"
+                :disabled="!vmsLoaded || vmsLoading || filteredVms.length === 0" @click="exportVmsCsv()">
+                <span class="vm-command-icon" aria-hidden="true">&#8681;</span>
+                <span>Export to CSV</span>
+              </button>
+              <button type="button" class="vm-command-button" :disabled="selectedVmCount === 0"
+                @click="openSelectedCoverageEditor()">
+                <span class="vm-command-icon" aria-hidden="true">&#9998;</span>
+                <span>Edit ODCR coverage decision</span>
+              </button>
+            </div>
+            <div class="vm-filter-bar" @multi-select-change="onVmFilterChange($event.detail.key)">
+              <input type="text" class="filter-input vm-filter-search" placeholder="Filter for any field"
+                aria-label="Filter loaded virtual machines" :value="vmFilter"
+                @input.debounce.200ms="onVmSearchInput($event.target.value)" />
+              <template x-for="filter in vmFilters" :key="filter.key">
+                <div class="multi-select" :class="{ open }" x-data="multiSelectDropdown(filter)"
+                  @click.outside="if (open) cancel()">
+                  <button x-ref="trigger" type="button" class="multi-select-trigger" :class="{ active: open }"
+                    @click="toggleMenu()" @keydown.escape.stop="cancel()" :aria-expanded="open"
+                    :title="config.label + ' equals ' + summary">
+                    <span class="multi-select-summary">
+                      <span class="multi-select-name" x-text="config.label"></span>
+                      <span class="multi-select-operator">equals</span>
+                      <strong x-text="globalScopeAppliesToFilter(config) && summary === 'all' ? 'all*' : summary"></strong>
+                    </span>
+                    <span class="multi-select-chevron" aria-hidden="true">&#9662;</span>
+                  </button>
+                  <div class="multi-select-menu" x-show="open" x-transition.opacity
+                    @keydown.escape.stop="cancel(); $refs.trigger && $refs.trigger.focus()">
+                    <div class="local-scope-note" x-show="globalScopeAppliesToFilter(config)">
+                      <span>(*) Global filters in effect.</span>
+                      <button type="button" @click.stop="cancel(); openScopeMenu()">Edit</button>
+                    </div>
+                    <input x-show="config.searchable" x-model="search" type="search"
+                      class="multi-select-search" :placeholder="'Search ' + config.label.toLowerCase()"
+                      :aria-label="'Search ' + config.label" />
+                    <label class="multi-select-option select-all" x-show="config.showSelectAll">
+                      <input type="checkbox" :checked="allSelected" :indeterminate.prop="someSelected"
+                        @change="toggleAll()" />
+                      <span>Select all</span>
+                    </label>
+                    <div class="multi-select-options">
+                      <template x-for="option in visibleOptions" :key="option.value">
+                        <label class="multi-select-option">
+                          <input type="checkbox" :checked="isSelected(option.value)"
+                            @change="toggleOption(option.value, $event.target.checked)" />
+                          <span x-text="option.label" :title="option.label"></span>
+                        </label>
+                      </template>
+                      <div class="multi-select-empty" x-show="visibleOptions.length === 0">No matching options</div>
+                    </div>
+                    <div class="multi-select-actions">
+                      <button type="button" class="btn" @click="apply()">Apply</button>
+                      <button type="button" class="btn ghost" @click="cancel()">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <button type="button" class="vm-filter-reset" @click="resetLocalVmFilters()"
+                :disabled="!hasActiveLocalVmFilters">Reset VM filters</button>
+            </div>
+
+            <div class="coverage-report-controls">
+              <button type="button" class="coverage-clear" @click="clearCoverageReportSelections()"
+                x-show="hasCoverageReportSelections">
+                <span class="coverage-clear-icon" aria-hidden="true">&#8630;</span>
+                <span class="coverage-clear-label">Clear report filters.</span>
+                <span class="coverage-clear-summary" x-text="coverageActiveFiltersText"></span>
+              </button>
+              <label class="coverage-matrix-group-by">
+                <span>Group by</span>
+                <select :value="coverageReportGroupBy" @change="setCoverageReportGroupBy($event.target.value)"
+                  aria-label="Group coverage report by">
+                  <template x-for="option in coverageReportGroupOptions" :key="option.key">
+                    <option :value="option.key" x-text="option.label"></option>
+                  </template>
+                </select>
+              </label>
+            </div>
+
+            <div class="coverage-report coverage-report-loading" x-show="vmsLoading && !coverageReportView"
+              aria-label="Loading Coverage report" aria-busy="true">
+              <section class="coverage-report-block coverage-required-block">
+                <span class="skeleton-line coverage-block-title-skeleton"></span>
+                <div class="coverage-required-grid">
+                  <section class="coverage-report-tile coverage-primary-tile"><span class="skeleton-line wide"></span></section>
+                  <section class="coverage-report-tile coverage-details-tile"><span class="skeleton-line"></span></section>
+                  <section class="coverage-report-tile coverage-prerequisites-tile"><span class="skeleton-line"></span></section>
+                  <section class="coverage-report-tile coverage-issues-tile"><span class="skeleton-line"></span></section>
+                </div>
+              </section>
+              <section class="coverage-report-block coverage-not-required-block">
+                <span class="skeleton-line coverage-block-title-skeleton"></span>
+                <section class="coverage-report-tile coverage-unassociation-tile"><span class="skeleton-line"></span></section>
+              </section>
+              <section class="coverage-report-tile coverage-marking-tile"><span class="skeleton-line"></span></section>
+            </div>
+
+            <div class="coverage-report" aria-label="Coverage report" x-show="coverageReportView">
+              <section class="coverage-report-block coverage-required-block" aria-labelledby="coverage-required-title">
+                <div class="coverage-report-block-title">
+                  <h2 id="coverage-required-title">ODCR Required</h2>
+                  <div class="coverage-category-facets" role="group" aria-label="ODCR Required coverage categories">
+                    <button type="button" :class="{ selected: coverageFacetSelected('coverageCategory', 'required:high') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'required:high')" @click="setCoverageFacet('categories', 'coverageCategory', 'required:high', $event)"><span class="coverage-category-bullet high" aria-hidden="true"></span><span>Required - High</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('required:high') + ')' "></span></button>
+                    <button type="button" :class="{ selected: coverageFacetSelected('coverageCategory', 'required:medium') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'required:medium')" @click="setCoverageFacet('categories', 'coverageCategory', 'required:medium', $event)"><span class="coverage-category-bullet medium" aria-hidden="true"></span><span>Required - Medium</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('required:medium') + ')' "></span></button>
+                    <button type="button" :class="{ selected: coverageFacetSelected('coverageCategory', 'required:low') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'required:low')" @click="setCoverageFacet('categories', 'coverageCategory', 'required:low', $event)"><span class="coverage-category-bullet low" aria-hidden="true"></span><span>Required - Low</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('required:low') + ')' "></span></button>
+                    <button type="button" x-show="coverageCategoryCount('required:undefined') > 0" :class="{ selected: coverageFacetSelected('coverageCategory', 'required:undefined') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'required:undefined')" @click="setCoverageFacet('categories', 'coverageCategory', 'required:undefined', $event)"><span class="coverage-category-bullet undefined" aria-hidden="true"></span><span>Required - Undefined</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('required:undefined') + ')' "></span></button>
+                    <button type="button" x-show="coverageUnmarkedOwner === 'required'" :class="{ selected: coverageFacetSelected('coverageCategory', 'unmarked') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'unmarked')" @click="setCoverageFacet('categories', 'coverageCategory', 'unmarked', $event)"><span class="coverage-category-bullet unmarked" aria-hidden="true"></span><span>Unmarked</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('unmarked') + ')' "></span></button>
+                    <button type="button" class="coverage-category-move" x-show="coverageUnmarkedOwner !== 'required'" aria-label="Move Unmarked to ODCR Required" @click="moveCoverageUnmarked('required')">Move Unmarked here</button>
+                  </div>
+                </div>
+                <div class="coverage-required-grid">
+              <section class="coverage-report-tile coverage-primary-tile">
+                <div class="coverage-report-head">
+                  <h2 x-text="coverageReportTitle('ODCR Association')" :title="coverageReportTitle('ODCR Association')"></h2>
+                </div>
+                <div class="coverage-compact-report coverage-association-grouped" x-show="coverageReportGroupBy !== 'none'">
+                  <div class="coverage-compact-visual">
+                    <div class="coverage-compact-chart"><div x-ref="coverageAssociationGroupedChart" class="coverage-chart" role="img" aria-label="ODCR association distribution"></div></div>
+                    <div class="coverage-compact-legend" aria-label="ODCR association selections">
+                      <button type="button" :class="{ selected: coverageFacetSelected('association', 'assigned') }" :aria-pressed="coverageFacetSelected('association', 'assigned')" @click="setCoverageFacet('coverage', 'association', 'assigned', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>ODCR assigned</span></button>
+                      <button type="button" :class="{ selected: coverageFacetSelected('association', 'not_associated') }" :aria-pressed="coverageFacetSelected('association', 'not_associated')" @click="setCoverageFacet('coverage', 'association', 'not_associated', $event)"><span class="coverage-legend-bullet neutral" aria-hidden="true"></span><span>Not associated</span></button>
+                    </div>
+                  </div>
+                  <div class="report-table-scroll">
+                  <table class="report-table coverage-association-table" aria-label="ODCR association by dimension">
+                    <thead><tr>
+                      <th><button type="button" class="report-sort-button report-sort-header" :title="coverageReportGroupLabel" @click="cycleCoverageReportSort('coverage', 'label')"><span class="report-sort-label" x-text="coverageReportGroupLabel"></span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('coverage', 'label') || '↕'"></span></button></th>
+                      <th><button type="button" class="report-sort-button report-sort-header" title="Review" @click="cycleCoverageReportSort('coverage', 'review')"><span class="report-sort-label">Review</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('coverage', 'review') || '↕'"></span></button></th>
+                      <th><button type="button" class="report-sort-button report-sort-header" title="ODCR assigned percentage" @click="cycleCoverageReportSort('coverage', 'percent')"><span class="report-sort-label">Assigned</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('coverage', 'percent') || '↕'"></span></button></th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="row in coverageSortedRows('coverage')" :key="row.key">
+                        <tr>
+                          <th scope="row"><button type="button" class="report-row-button"
+                            :class="{ selected: coverageFacetSelected('dimension', row.key), 'context-unmapped': row.missing }"
+                            :aria-pressed="coverageFacetSelected('dimension', row.key)"
+                            :title="row.label"
+                            @click="setCoverageFacet('coverage', 'dimension', row.key, $event)" x-text="row.label"></button></th>
+                          <td></td>
+                          <td><strong x-text="coveragePercent(row.assignedPercent)"></strong> <span class="muted" x-text="row.assignedReferenceCount + ' / ' + row.referenceCount"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                  </div>
+                </div>
+                <div class="coverage-none-visual" x-show="coverageReportGroupBy === 'none'">
+                  <div class="coverage-chart-stage"><div x-ref="coverageAssociationChart" class="coverage-chart" role="img" aria-label="ODCR association distribution"></div></div>
+                  <div class="coverage-association-summary">
+                    <div class="coverage-compact-legend" aria-label="ODCR association selections">
+                      <button type="button" :class="{ selected: coverageFacetSelected('association', 'assigned') }" :aria-pressed="coverageFacetSelected('association', 'assigned')" @click="setCoverageFacet('coverage', 'association', 'assigned', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>ODCR assigned</span></button>
+                      <button type="button" :class="{ selected: coverageFacetSelected('association', 'not_associated') }" :aria-pressed="coverageFacetSelected('association', 'not_associated')" @click="setCoverageFacet('coverage', 'association', 'not_associated', $event)"><span class="coverage-legend-bullet neutral" aria-hidden="true"></span><span>Not associated</span></button>
+                    </div>
+                    <div class="coverage-review-indicator"><span>Review</span><strong>&mdash;</strong></div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="coverage-report-tile coverage-details-tile">
+                <div class="coverage-report-head"><h2>ODCR Coverage Details</h2></div>
+                <div class="coverage-compact-report">
+                  <div class="coverage-compact-chart"><div x-ref="coverageDetailsChart" class="coverage-chart" role="img" aria-label="Reservation status distribution"></div></div>
+                  <div class="report-table-scroll coverage-details-table-scroll">
+                    <table class="report-table report-table-two-column coverage-legend-table" aria-label="Reservation statuses">
+                      <thead><tr><th><button type="button" class="report-sort-button report-sort-header" title="Reservation status" @click="cycleCoverageReportSort('details', 'label')"><span class="report-sort-label">Reservation status</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('details', 'label') || '↕'"></span></button></th><th><button type="button" class="report-sort-button report-sort-header" title="VMs" @click="cycleCoverageReportSort('details', 'count')"><span class="report-sort-label">VMs</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('details', 'count') || '↕'"></span></button></th></tr></thead>
+                      <tbody><template x-for="row in coverageSortedRows('details')" :key="row.key"><tr>
+                        <th scope="row"><button type="button" class="report-row-button coverage-legend-label"
+                          :class="{ selected: coverageFacetSelected('reservationStatus', row.key) }"
+                          :aria-pressed="coverageFacetSelected('reservationStatus', row.key)"
+                          :title="row.label" @click="setCoverageFacet('details', 'reservationStatus', row.key, $event)">
+                          <span class="coverage-legend-bullet" :style="`background-color: ${coverageReservationStatusColor(row.key)}`" aria-hidden="true"></span><span x-text="row.label"></span>
+                        </button></th>
+                        <td x-text="row.referenceCount"></td>
+                      </tr></template></tbody>
+                    </table>
+                  </div>
+                </div>
+              </section>
+
+              <section class="coverage-report-tile coverage-prerequisites-tile">
+                <div class="coverage-report-head">
+                  <h2 x-text="coverageReportTitle('ODCR Prerequisites')" :title="coverageReportTitle('ODCR Prerequisites')"></h2>
+                </div>
+                <div class="coverage-compact-report coverage-prerequisites-grouped" x-show="coverageReportGroupBy !== 'none'">
+                  <div class="coverage-compact-visual">
+                    <div class="coverage-compact-chart"><div x-ref="coveragePrerequisitesGroupedChart" class="coverage-chart" role="img" aria-label="Supported and unsupported or unknown prerequisites"></div></div>
+                    <div class="coverage-compact-legend" aria-label="Prerequisite status selections">
+                      <button type="button" :class="{ selected: coverageFacetSelected('prerequisiteStatus', 'Supported') }" :aria-pressed="coverageFacetSelected('prerequisiteStatus', 'Supported')" @click="setCoverageFacet('prerequisites', 'prerequisiteStatus', 'Supported', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>Supported</span></button>
+                      <button type="button" :class="{ selected: coverageFacetSelected('prerequisiteStatus', 'Unsupported') && coverageFacetSelected('prerequisiteStatus', 'Unknown') }" :aria-pressed="coverageFacetSelected('prerequisiteStatus', 'Unsupported') && coverageFacetSelected('prerequisiteStatus', 'Unknown')" @click="setCoverageFacetValues('prerequisites', 'prerequisiteStatus', ['Unsupported', 'Unknown'])"><span class="coverage-legend-bullet bad" aria-hidden="true"></span><span>Unsup. or unkn.</span></button>
+                    </div>
+                  </div>
+                  <div class="report-table-scroll">
+                  <table class="report-table report-table-two-column"><thead><tr><th><button type="button" class="report-sort-button report-sort-header" :title="coverageReportGroupLabel" @click="cycleCoverageReportSort('prerequisites', 'label')"><span class="report-sort-label" x-text="coverageReportGroupLabel"></span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('prerequisites', 'label') || '↕'"></span></button></th>
+                    <th><button type="button" class="report-sort-button report-sort-header" title="Unsupported or unknown VMs" @click="cycleCoverageReportSort('prerequisites', 'count')"><span class="report-sort-label">Unsup. or unkn. VMs</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('prerequisites', 'count') || '↕'"></span></button></th>
+                  </tr></thead><tbody>
+                    <template x-for="row in visibleCoveragePrerequisiteRows()" :key="row.key"><tr>
+                      <th scope="row"><button type="button" class="report-row-button" :class="{ selected: coverageFacetSelected('dimension', row.key) }" :aria-pressed="coverageFacetSelected('dimension', row.key)" :title="row.label" @click="setCoverageFacet('prerequisites', 'dimension', row.key, $event)" x-text="row.label"></button></th>
+                      <td x-text="row.unsupportedOrUnknownCount"></td>
+                    </tr></template>
+                  </tbody></table></div>
+                </div>
+                <div class="coverage-none-visual" x-show="coverageReportGroupBy === 'none'">
+                  <div class="coverage-chart-stage"><div x-ref="coveragePrerequisitesChart" class="coverage-chart" role="img" aria-label="ODCR prerequisite status distribution"></div></div>
+                  <div class="coverage-compact-legend" aria-label="Prerequisite chart selections">
+                    <button type="button" :class="{ selected: coverageFacetSelected('prerequisiteStatus', 'Supported') }" :aria-pressed="coverageFacetSelected('prerequisiteStatus', 'Supported')" @click="setCoverageFacet('prerequisites', 'prerequisiteStatus', 'Supported', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>Supported</span></button>
+                    <button type="button" :class="{ selected: coverageFacetSelected('prerequisiteStatus', 'Unsupported') && coverageFacetSelected('prerequisiteStatus', 'Unknown') }" :aria-pressed="coverageFacetSelected('prerequisiteStatus', 'Unsupported') && coverageFacetSelected('prerequisiteStatus', 'Unknown')" @click="setCoverageFacetValues('prerequisites', 'prerequisiteStatus', ['Unsupported', 'Unknown'])"><span class="coverage-legend-bullet bad" aria-hidden="true"></span><span>Unsup. or unkn.</span></button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="coverage-report-tile coverage-issues-tile">
+                <div class="coverage-report-head"><h2>ODCR Prerequisite Issues</h2></div>
+                <div class="report-table-scroll"><table class="report-table report-table-two-column"><thead><tr><th><button type="button" class="report-sort-button report-sort-header" title="Prerequisite" @click="cycleCoverageReportSort('issues', 'label')"><span class="report-sort-label">Prerequisite</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('issues', 'label') || '↕'"></span></button></th><th><button type="button" class="report-sort-button report-sort-header" title="Unsupported or unknown VMs" @click="cycleCoverageReportSort('issues', 'count')"><span class="report-sort-label">Unsup. or unkn. VMs</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('issues', 'count') || '↕'"></span></button></th></tr></thead><tbody>
+                  <template x-for="row in coverageSortedRows('issues')" :key="row.key"><tr>
+                    <th scope="row"><button type="button" class="report-row-button" :disabled="row.referenceCount === 0" :class="{ selected: coverageFacetSelected('prerequisiteIssue', row.key) }" :aria-pressed="coverageFacetSelected('prerequisiteIssue', row.key)" :title="row.label" @click="setCoverageFacet('issues', 'prerequisiteIssue', row.key, $event)" x-text="row.label"></button></th>
+                    <td x-text="row.referenceCount" :title="row.referenceCount + ' VMs'"></td>
+                  </tr></template>
+                </tbody></table></div>
+              </section>
+                </div>
+              </section>
+
+              <section class="coverage-report-block coverage-not-required-block" aria-labelledby="coverage-not-required-title">
+                <div class="coverage-report-block-title">
+                  <h2 id="coverage-not-required-title">ODCR not Required</h2>
+                  <div class="coverage-category-facets" role="group" aria-label="ODCR not Required coverage categories">
+                    <button type="button" :class="{ selected: coverageFacetSelected('coverageCategory', 'not_required') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'not_required')" @click="setCoverageFacet('categories', 'coverageCategory', 'not_required', $event)"><span class="coverage-category-bullet not-required" aria-hidden="true"></span><span>Not required</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('not_required') + ')' "></span></button>
+                    <button type="button" x-show="coverageUnmarkedOwner === 'not_required'" :class="{ selected: coverageFacetSelected('coverageCategory', 'unmarked') }" :aria-pressed="coverageFacetSelected('coverageCategory', 'unmarked')" @click="setCoverageFacet('categories', 'coverageCategory', 'unmarked', $event)"><span class="coverage-category-bullet unmarked" aria-hidden="true"></span><span>Unmarked</span><span class="coverage-category-count" x-text="'(' + coverageCategoryCount('unmarked') + ')' "></span></button>
+                    <button type="button" class="coverage-category-move" x-show="coverageUnmarkedOwner !== 'not_required'" aria-label="Move Unmarked to ODCR not Required" @click="moveCoverageUnmarked('not_required')">Move Unmarked here</button>
+                  </div>
+                </div>
+                <section class="coverage-report-tile coverage-unassociation-tile">
+                  <div class="coverage-report-head"><h2 x-text="coverageReportTitle('ODCR Unassociation')" :title="coverageReportTitle('ODCR Unassociation')"></h2></div>
+                  <div class="coverage-compact-report coverage-unassociation-grouped" x-show="coverageReportGroupBy !== 'none'">
+                    <div class="coverage-compact-visual">
+                      <div class="coverage-compact-chart"><div x-ref="coverageUnassociationGroupedChart" class="coverage-chart" role="img" aria-label="ODCR unassociation distribution"></div></div>
+                      <div class="coverage-compact-legend" aria-label="ODCR unassociation selections">
+                        <button type="button" :class="{ selected: coverageFacetSelected('association', 'not_associated') }" :aria-pressed="coverageFacetSelected('association', 'not_associated')" @click="setCoverageFacet('unassociation', 'association', 'not_associated', $event)"><span class="coverage-legend-bullet neutral" aria-hidden="true"></span><span>Not associated</span></button>
+                        <button type="button" :class="{ selected: coverageFacetSelected('association', 'assigned') }" :aria-pressed="coverageFacetSelected('association', 'assigned')" @click="setCoverageFacet('unassociation', 'association', 'assigned', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>ODCR assigned</span></button>
+                      </div>
+                    </div>
+                    <div class="report-table-scroll"><table class="report-table coverage-unassociation-table" aria-label="ODCR unassociation by dimension">
+                      <thead><tr>
+                        <th><button type="button" class="report-sort-button report-sort-header" :title="coverageReportGroupLabel" @click="cycleCoverageReportSort('unassociation', 'label')"><span class="report-sort-label" x-text="coverageReportGroupLabel"></span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('unassociation', 'label') || '↕'"></span></button></th>
+                        <th><button type="button" class="report-sort-button report-sort-header" title="Not associated percentage" @click="cycleCoverageReportSort('unassociation', 'percent')"><span class="report-sort-label">Unassociated</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('unassociation', 'percent') || '↕'"></span></button></th>
+                      </tr></thead>
+                      <tbody><template x-for="row in coverageSortedRows('unassociation')" :key="row.key"><tr>
+                        <th scope="row"><button type="button" class="report-row-button" :class="{ selected: coverageFacetSelected('dimension', row.key), 'context-unmapped': row.missing }" :aria-pressed="coverageFacetSelected('dimension', row.key)" :title="row.label" @click="setCoverageFacet('unassociation', 'dimension', row.key, $event)" x-text="row.label"></button></th>
+                        <td><strong x-text="coveragePercent(row.unassociatedPercent)"></strong> <span class="muted" x-text="row.unassociatedReferenceCount + ' / ' + row.referenceCount"></span></td>
+                      </tr></template></tbody>
+                    </table></div>
+                  </div>
+                  <div class="coverage-none-visual" x-show="coverageReportGroupBy === 'none'">
+                    <div class="coverage-chart-stage"><div x-ref="coverageUnassociationChart" class="coverage-chart" role="img" aria-label="ODCR unassociation distribution"></div></div>
+                    <div class="coverage-compact-legend" aria-label="ODCR unassociation selections">
+                      <button type="button" :class="{ selected: coverageFacetSelected('association', 'not_associated') }" :aria-pressed="coverageFacetSelected('association', 'not_associated')" @click="setCoverageFacet('unassociation', 'association', 'not_associated', $event)"><span class="coverage-legend-bullet neutral" aria-hidden="true"></span><span>Not associated</span></button>
+                      <button type="button" :class="{ selected: coverageFacetSelected('association', 'assigned') }" :aria-pressed="coverageFacetSelected('association', 'assigned')" @click="setCoverageFacet('unassociation', 'association', 'assigned', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>ODCR assigned</span></button>
+                    </div>
+                  </div>
+                </section>
+              </section>
+
+              <section class="coverage-report-tile coverage-marking-tile">
+                <div class="coverage-report-head"><h2 x-text="coverageReportTitle('Coverage decision status')" :title="coverageReportTitle('Coverage decision status')"></h2></div>
+                <div class="coverage-compact-report coverage-marking-grouped" x-show="coverageReportGroupBy !== 'none'">
+                  <div class="coverage-compact-visual">
+                    <div class="coverage-compact-chart"><div x-ref="coverageMarkingGroupedChart" class="coverage-chart" role="img" aria-label="Coverage decision recorded and no decision"></div></div>
+                    <div class="coverage-compact-legend" aria-label="Coverage decision status selections">
+                      <button type="button" :class="{ selected: coverageFacetSelected('marking', 'marked') }" :aria-pressed="coverageFacetSelected('marking', 'marked')" @click="setCoverageFacet('marking', 'marking', 'marked', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>Decision recorded</span></button>
+                      <button type="button" :class="{ selected: coverageFacetSelected('marking', 'unmarked') }" :aria-pressed="coverageFacetSelected('marking', 'unmarked')" @click="setCoverageFacet('marking', 'marking', 'unmarked', $event)"><span class="coverage-legend-bullet bad" aria-hidden="true"></span><span>No decision</span></button>
+                    </div>
+                  </div>
+                  <div class="report-table-scroll"><table class="report-table report-table-two-column"><thead><tr><th><button type="button" class="report-sort-button report-sort-header" :title="coverageReportGroupLabel" @click="cycleCoverageReportSort('marking', 'label')"><span class="report-sort-label" x-text="coverageReportGroupLabel"></span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('marking', 'label') || '↕'"></span></button></th><th><button type="button" class="report-sort-button report-sort-header" title="Decision recorded" @click="cycleCoverageReportSort('marking', 'marked')"><span class="report-sort-label">Decision recorded</span><span class="report-sort-indicator" x-text="coverageReportSortIndicator('marking', 'marked') || '↕'"></span></button></th></tr></thead><tbody>
+                    <template x-for="row in coverageSortedRows('marking')" :key="row.key"><tr><th scope="row"><button type="button" class="report-row-button" :class="{ selected: coverageFacetSelected('dimension', row.key) }" :aria-pressed="coverageFacetSelected('dimension', row.key)" :title="row.label" @click="setCoverageFacet('marking', 'dimension', row.key, $event)" x-text="row.label"></button></th><td><strong x-text="coveragePercent(row.markedPercent)"></strong> <span class="muted" x-text="row.markedReferenceCount + ' / ' + row.referenceCount"></span></td></tr></template>
+                  </tbody></table></div>
+                </div>
+                <div class="coverage-none-visual" x-show="coverageReportGroupBy === 'none'">
+                  <div class="coverage-chart-stage"><div x-ref="coverageMarkingChart" class="coverage-chart" role="img" aria-label="Coverage decision recorded and no decision"></div></div>
+                  <div class="coverage-compact-legend" aria-label="Coverage decision status selections">
+                    <button type="button" :class="{ selected: coverageFacetSelected('marking', 'marked') }" :aria-pressed="coverageFacetSelected('marking', 'marked')" @click="setCoverageFacet('marking', 'marking', 'marked', $event)"><span class="coverage-legend-bullet good" aria-hidden="true"></span><span>Decision recorded</span></button>
+                    <button type="button" :class="{ selected: coverageFacetSelected('marking', 'unmarked') }" :aria-pressed="coverageFacetSelected('marking', 'unmarked')" @click="setCoverageFacet('marking', 'marking', 'unmarked', $event)"><span class="coverage-legend-bullet bad" aria-hidden="true"></span><span>No decision</span></button>
+                  </div>
+                </div>
+              </section>
+
+              <div class="coverage-report-empty" x-show="coverageReportView?.referenceCount === 0">No VMs in scope</div>
+            </div>
+
+            <div class="vm-table-frame">
+              <div class="vm-table-scroll">
+                <template x-if="vmsLoading">
+                  <table class="vm-table skeleton-table" aria-label="Loading virtual machines" aria-busy="true">
+                    <thead>
+                      <tr>
+                        <th class="vm-selection-header">
+                          <input type="checkbox" disabled aria-label="Select all VMs" />
+                        </th>
+                        <th>Name</th>
+                        <th>Subscription</th>
+                        <template x-for="field in vmBusinessContextFields" :key="field.key">
+                          <th x-text="field.name"></th>
+                        </template>
+                        <th>Resource group</th>
+                        <th>Region</th>
+                        <th>Deployment</th>
+                        <th>Size</th>
+                        <th>ODCR coverage</th>
+                        <th class="reservation-status-column">Reservation status</th>
+                        <th>Prerequisite status</th>
+                        <th>Capacity reservation group</th>
+                        <th>Capacity reservation</th>
+                        <th>Allocation</th>
+                        <th>Associated VMs</th>
+                        <th>VMSS Flexible</th>
+                        <th>Power state</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="row in [1, 2, 3, 4, 5, 6, 7, 8]" :key="row">
+                        <tr aria-hidden="true">
+                          <td><span class="skeleton-checkbox"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <template x-for="field in vmBusinessContextFields" :key="field.key">
+                            <td><span class="skeleton-block"></span></td>
+                          </template>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td class="reservation-status-column"><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+                <template x-if="!vmsLoading && vms.length === 0 && !hasActiveVmFilters">
+                  <div class="empty">No virtual machines you can access.</div>
+                </template>
+                <template x-if="!vmsLoading && vms.length === 0 && hasActiveVmFilters">
+                  <div class="empty">No virtual machines match the selected filters.</div>
+                </template>
+                <template x-if="!vmsLoading && vms.length > 0">
+                  <table class="vm-table">
+                  <thead>
+                    <tr>
+                      <th class="vm-selection-header">
+                        <input type="checkbox" aria-label="Select all VMs on the current page"
+                          :checked="allVisibleVmsSelected" x-effect="$el.indeterminate = someVisibleVmsSelected"
+                          @click.stop @change="setAllVisibleVmsSelected($event.target.checked)" />
+                      </th>
+                      <th :aria-sort="vmSort.key === 'name' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('name')">Name <span x-text="vmSortIndicator('name')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'subscriptionName' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('subscriptionName')">Subscription <span x-text="vmSortIndicator('subscriptionName')"></span></button>
+                      </th>
+                      <template x-for="field in vmBusinessContextFields" :key="field.key">
+                        <th :aria-sort="vmSort.key === vmBusinessContextFilterKey(field.key) ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleVmSort(vmBusinessContextFilterKey(field.key))">
+                            <span x-text="field.name"></span> <span x-text="vmSortIndicator(vmBusinessContextFilterKey(field.key))"></span>
+                          </button>
+                        </th>
+                      </template>
+                      <th :aria-sort="vmSort.key === 'resourceGroup' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('resourceGroup')">Resource group <span x-text="vmSortIndicator('resourceGroup')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'location' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('location')">Region <span x-text="vmSortIndicator('location')"></span></button>
+                      </th>
+                      <th class="tooltip-header" :aria-sort="vmSort.key === 'deploymentType' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <span class="deployment-header">
+                          <button class="sort-button" @click="cycleVmSort('deploymentType')">Deployment <span x-text="vmSortIndicator('deploymentType')"></span></button>
+                          <span class="zone-mode-control">
+                            <button type="button" class="zone-mode-switch" role="switch"
+                              :aria-checked="zoneDisplayMode === 'physical'" @click.stop="toggleZoneDisplay()"
+                              :aria-label="zoneDisplayMode === 'logical' ? 'Display physical availability zones' : 'Display logical availability zones'">
+                              <span :class="{ active: zoneDisplayMode === 'logical' }">Log</span>
+                              <span :class="{ active: zoneDisplayMode === 'physical' }">Phy</span>
+                            </button>
+                            <span class="tooltip-content zone-mode-tooltip" role="tooltip">
+                              <span class="tooltip-section">Each datacenter is assigned to a physical zone. Azure maps physical zones to logical zones in each subscription.</span>
+                              <span class="tooltip-section">Different subscriptions might use a different mapping order. Switch to physical zones to compare zone placement across subscriptions.</span>
+                              <span class="tooltip-section">
+                                <a href="https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview?tabs=azure-cli#physical-and-logical-availability-zones"
+                                  target="_blank" rel="noopener noreferrer">
+                                  Read about physical and logical availability zones
+                                  <span class="external-link-icon" aria-hidden="true">↗</span>
+                                  <span class="sr-only">(opens in a new tab)</span>
+                                </a>
+                              </span>
+                            </span>
+                          </span>
+                        </span>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'vmSize' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('vmSize')">Size <span x-text="vmSortIndicator('vmSize')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'odcrCoverage' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('odcrCoverage')">ODCR coverage <span x-text="vmSortIndicator('odcrCoverage')"></span></button>
+                      </th>
+                      <th class="tooltip-header reservation-status-column" :aria-sort="vmSort.key === 'reservationStatus' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <span class="header-with-info">
+                          <button class="sort-button" @click="cycleVmSort('reservationStatus')">Reservation status <span x-text="vmSortIndicator('reservationStatus')"></span></button>
+                          <span class="info-tooltip" tabindex="0" aria-label="Reservation status definitions">i
+                            <span class="tooltip-content" role="tooltip">
+                              <span class="tooltip-section"><strong>Allocated, within capacity:</strong> allocated to a reserved unit; reservation isn't overallocated.</span>
+                              <span class="tooltip-section"><strong>Allocated, overallocated:</strong> allocated VMs exceed reserved capacity; ARG can't identify which VMs have SLA coverage.</span>
+                              <span class="tooltip-section"><strong>Associated, capacity available:</strong> configured for the reservation but not allocated; an unused reserved unit currently exists.</span>
+                              <span class="tooltip-section"><strong>Associated, capacity fully used:</strong> configured but not allocated, with no reserved unit currently free.</span>
+                              <span class="tooltip-section"><strong>Associated, no capacity:</strong> configured for a reservation whose capacity is zero.</span>
+                              <span class="tooltip-section"><strong>Configuration issue:</strong> VM references a CRG but no reservation association was found.</span>
+                              <span class="tooltip-section"><strong>Not associated:</strong> VM isn't configured to use ODCR.</span>
+                              <span class="tooltip-section">ODCR prerequisite supportability is evaluated separately in the adjacent column.</span>
+                            </span>
+                          </span>
+                        </span>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'odcrSupportabilityStatus' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('odcrSupportabilityStatus')">Prerequisite status <span x-text="vmSortIndicator('odcrSupportabilityStatus')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'capacityReservationGroupName' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('capacityReservationGroupName')">Capacity reservation group <span x-text="vmSortIndicator('capacityReservationGroupName')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'matchingCapacityReservationName' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('matchingCapacityReservationName')">Capacity reservation <span x-text="vmSortIndicator('matchingCapacityReservationName')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'reservationAllocatedCount' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('reservationAllocatedCount')">Allocation <span x-text="vmSortIndicator('reservationAllocatedCount')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'reservationAssociatedCount' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('reservationAssociatedCount')">Associated VMs <span x-text="vmSortIndicator('reservationAssociatedCount')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'isVmssFlexible' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('isVmssFlexible')">VMSS Flexible <span x-text="vmSortIndicator('isVmssFlexible')"></span></button>
+                      </th>
+                      <th :aria-sort="vmSort.key === 'powerState' ? (vmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleVmSort('powerState')">Power state <span x-text="vmSortIndicator('powerState')"></span></button>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="vm in paginatedVms" :key="vm.id">
+                      <tr class="vm-selectable-row" :class="{ selected: isVmSelected(vm) }"
+                        @click="toggleVmSelection(vm)" @keydown.enter.prevent="toggleVmSelection(vm)"
+                        @keydown.space.prevent="toggleVmSelection(vm)" tabindex="0"
+                        :aria-selected="isVmSelected(vm)">
+                        <td class="vm-selection-cell">
+                          <input type="checkbox" :checked="isVmSelected(vm)"
+                            :aria-label="'Select ' + vm.name" @click.stop
+                            @change="setVmSelected(vm, $event.target.checked)" />
+                        </td>
+                        <td>
+                          <span class="resource-name">
+                            <img class="resource-type-icon" :src="resourceTypeIcon(vm.resourceType)" alt=""
+                              :title="vm.resourceType || 'Azure resource'"
+                              @error="useGenericResourceIcon($event)" />
+                            <span x-text="vm.name"></span>
+                          </span>
+                        </td>
+                        <td x-text="vm.subscriptionName || vm.subscriptionId"></td>
+                        <template x-for="field in vmBusinessContextFields" :key="field.key">
+                          <td>
+                            <span :class="vmBusinessContextValue(vm, field.key) === null ? 'context-unmapped' : ''"
+                              x-text="vmBusinessContextDisplay(vm, field.key)"></span>
+                          </td>
+                        </template>
+                        <td x-text="vm.resourceGroup"></td>
+                        <td x-text="locationDisplay(vm)"></td>
+                        <td x-text="deploymentDisplay(vm)"></td>
+                        <td x-text="vm.vmSize || '—'"></td>
+                        <td>
+                          <span class="coverage-cell">
+                            <span class="coverage-decision-tooltip" tabindex="0" @click.stop
+                              @mouseenter="showCoverageDecisionTooltip(vm, $el)"
+                              @mouseleave="hideCoverageDecisionTooltip()"
+                              @focus="showCoverageDecisionTooltip(vm, $el)"
+                              @blur="hideCoverageDecisionTooltip()"
+                              @keydown.escape.stop="hideCoverageDecisionTooltip()">
+                              <span class="badge coverage-badge" :class="odcrCoverageClass(vm)"
+                                x-text="odcrCoverageText(vm)"></span>
+                            </span>
+                            <button type="button" class="coverage-edit-button" @click.stop="openCoverageEditor(vm)"
+                              title="Edit ODCR coverage decision" aria-label="Edit ODCR coverage decision">&#9998;</button>
+                          </span>
+                        </td>
+                        <td class="reservation-status-column">
+                          <span class="badge status-badge" :class="reservationStatusClass(vm.reservationStatus)"
+                            x-text="vm.reservationStatus"></span>
+                        </td>
+                        <td>
+                          <button type="button" class="badge status-badge"
+                            :class="prerequisiteStatusClass(vm.odcrSupportabilityStatus) + (hasOdcrDetails(vm) ? ' actionable' : '')"
+                            :disabled="!hasOdcrDetails(vm)" @click.stop="openOdcrDetails(vm)"
+                            x-text="vm.odcrSupportabilityStatus || 'Unknown'"
+                            :title="hasOdcrDetails(vm) ? 'View ODCR prerequisites' : vm.odcrSupportabilityStatus"></button>
+                        </td>
+                        <td x-text="vm.capacityReservationGroupName || '—'"></td>
+                        <td x-text="vm.matchingCapacityReservationName || '—'"></td>
+                        <td x-text="reservationAllocationText(vm)" title="Allocated VMs / reserved capacity"></td>
+                        <td x-text="vm.matchingCapacityReservationName ? vm.reservationAssociatedCount : '—'"></td>
+                        <td x-text="vm.isVmssFlexible ? 'Yes' : 'No'"></td>
+                        <td>
+                          <span class="badge" :class="vmPowerClass(vm.powerState)"
+                            x-text="vm.powerState || '—'"></span>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                  </table>
+                </template>
+              </div>
+              <div class="vm-table-footer">
+                <div class="vm-footer-left">
+                  <span class="vm-slice-count"
+                    x-text="'Showing ' + vmPageStart() + ' - ' + vmPageEnd() + ' of ' + filteredVms.length + '.'"></span>
+                  <label class="vm-page-size">
+                    <span>Display count:</span>
+                    <select :value="vmPageSize" @change="setVmPageSize($event.target.value)"
+                      aria-label="Virtual machines per page">
+                      <option value="20">20</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                      <option value="200">200</option>
+                    </select>
+                  </label>
+                  <span class="vm-selected-count" x-show="selectedVmCount > 0"
+                    x-text="selectedVmCount + ' selected'"></span>
+                </div>
+                <nav class="vm-pagination" x-show="filteredVms.length > vmPageSize" aria-label="Virtual machine pages">
+                  <button type="button" class="vm-page-button" :disabled="vmPage === 1"
+                    @click="setVmPage(1)" aria-label="First page" title="First page">&laquo;</button>
+                  <button type="button" class="vm-page-button" :disabled="vmPage === 1"
+                    @click="setVmPage(vmPage - 1)" aria-label="Previous page" title="Previous page">&lsaquo;</button>
+                  <span class="vm-page-status" x-text="'Page ' + vmPage + ' of ' + vmPageCount"></span>
+                  <button type="button" class="vm-page-button" :disabled="vmPage === vmPageCount"
+                    @click="setVmPage(vmPage + 1)" aria-label="Next page" title="Next page">&rsaquo;</button>
+                  <button type="button" class="vm-page-button" :disabled="vmPage === vmPageCount"
+                    @click="setVmPage(vmPageCount)" aria-label="Last page" title="Last page">&raquo;</button>
+                </nav>
+                <div class="vm-footer-right">
+                  <span x-show="vmsLoading" class="spin" aria-label="Loading"></span>
+                  <span x-show="!vmsLoading && vmLoadDurationMs !== null && vmLoadedAt !== null"
+                    x-text="vmLoadedSummaryText()"></span>
+                </div>
+              </div>
+              <template x-if="coverageDecisionTooltip">
+                <div class="tooltip-content coverage-decision-popover" role="tooltip"
+                  :class="{ above: coverageDecisionTooltip.showAbove }"
+                  :style="`left: ${coverageDecisionTooltip.left}px; top: ${coverageDecisionTooltip.top}px`">
+                  <span class="tooltip-section" x-show="coverageDecisionTooltip.vm.odcrCoverage?.note"
+                    x-text="coverageDecisionTooltip.vm.odcrCoverage?.note"></span>
+                  <span class="tooltip-section" x-show="coverageDecisionHasAudit(coverageDecisionTooltip.vm)">
+                    <span x-text="'Last updated: ' + formatDateTime(coverageDecisionTooltip.vm.odcrCoverage?.updatedAt)"></span><br />
+                    <span x-text="'Last updated by: ' + coverageDecisionAuditName(coverageDecisionTooltip.vm)"></span>
+                  </span>
+                  <span class="tooltip-section"
+                    x-show="!coverageDecisionHasAudit(coverageDecisionTooltip.vm) && !coverageDecisionTooltip.vm.odcrCoverage?.note">No coverage decision has been recorded</span>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <div x-show="odcrTab === 'usage'" class="card vm-card">
+            <div class="vm-command-bar">
+              <button type="button" class="vm-command-button" @click="loadOdcrUsage()" :disabled="odcrUsageLoading">
+                <span class="vm-command-icon" :class="{ spinning: odcrUsageLoading }" aria-hidden="true">&#8635;</span>
+                <span>Refresh</span>
+              </button>
+              <button type="button" class="vm-command-button"
+                :disabled="!odcrUsageLoaded || odcrUsageLoading || filteredOdcrUsageRows.length === 0"
+                @click="exportOdcrUsageCsv()">
+                <span class="vm-command-icon" aria-hidden="true">&#8681;</span>
+                <span>Export to CSV</span>
+              </button>
+              <button type="button" class="vm-command-button odcr-view-command"
+                @click="setOdcrUsageView(odcrUsageView === 'reservation' ? 'group' : 'reservation')"
+                :title="odcrUsageView === 'reservation' ? 'Switch to capacity reservation group view' : 'Switch to capacity reservation view'">
+                <span class="vm-command-icon odcr-view-icon" aria-hidden="true">
+                  <span>&#8592;</span><span>&#8594;</span>
+                </span>
+                <span x-text="odcrUsageView === 'reservation' ? 'Switch to capacity reservation group view' : 'Switch to capacity reservation view'"></span>
+              </button>
+              <div class="odcr-usage-controls">
+                <span class="odcr-metric-label">Unused values:</span>
+                <button type="button" class="zone-mode-switch odcr-metric-switch" role="switch"
+                  :aria-checked="odcrUsageMetric === 'cost'" @click="setOdcrUsageMetric(odcrUsageMetric === 'hours' ? 'cost' : 'hours')"
+                  :title="odcrUsageMetric === 'hours' ? 'Display unused cost' : 'Display unused hours'">
+                  <span :class="{ active: odcrUsageMetric === 'hours' }">Hours</span>
+                  <span :class="{ active: odcrUsageMetric === 'cost' }">Cost</span>
+                </button>
+                <label class="odcr-deleted-toggle">
+                  <input type="checkbox" :checked="odcrUsageIncludeDeleted" @change="toggleOdcrUsageDeleted()" />
+                  <span>Include deleted</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="vm-filter-bar" @multi-select-change="onOdcrUsageFilterChange($event.detail.key)">
+              <input type="text" class="filter-input vm-filter-search" placeholder="Filter for any field"
+                aria-label="Filter loaded capacity reservations" :value="odcrUsageFilter"
+                @input.debounce.200ms="onOdcrUsageSearchInput($event.target.value)" />
+              <template x-for="filter in odcrUsageFilters" :key="filter.key">
+                <div class="multi-select" :class="{ open }" x-data="multiSelectDropdown(filter)"
+                  @click.outside="if (open) cancel()">
+                  <button x-ref="trigger" type="button" class="multi-select-trigger" :class="{ active: open }"
+                    @click="toggleMenu()" @keydown.escape.stop="cancel()" :aria-expanded="open"
+                    :title="config.label + ' equals ' + summary">
+                    <span class="multi-select-summary">
+                      <span class="multi-select-name" x-text="config.label"></span>
+                      <span class="multi-select-operator">equals</span>
+                      <strong x-text="globalScopeAppliesToFilter(config) && summary === 'all' ? 'all*' : summary"></strong>
+                    </span>
+                    <span class="multi-select-chevron" aria-hidden="true">&#9662;</span>
+                  </button>
+                  <div class="multi-select-menu" x-show="open" x-transition.opacity
+                    @keydown.escape.stop="cancel(); $refs.trigger && $refs.trigger.focus()">
+                    <div class="local-scope-note" x-show="globalScopeAppliesToFilter(config)">
+                      <span>(*) Global filters in effect.</span>
+                      <button type="button" @click.stop="cancel(); openScopeMenu()">Edit</button>
+                    </div>
+                    <input x-show="config.searchable" x-model="search" type="search"
+                      class="multi-select-search" :placeholder="'Search ' + config.label.toLowerCase()"
+                      :aria-label="'Search ' + config.label" />
+                    <label class="multi-select-option select-all" x-show="config.showSelectAll">
+                      <input type="checkbox" :checked="allSelected" :indeterminate.prop="someSelected"
+                        @change="toggleAll()" />
+                      <span>Select all</span>
+                    </label>
+                    <div class="multi-select-options">
+                      <template x-for="option in visibleOptions" :key="option.value">
+                        <label class="multi-select-option">
+                          <input type="checkbox" :checked="isSelected(option.value)"
+                            @change="toggleOption(option.value, $event.target.checked)" />
+                          <span x-text="option.label" :title="option.label"></span>
+                        </label>
+                      </template>
+                      <div class="multi-select-empty" x-show="visibleOptions.length === 0">No matching options</div>
+                    </div>
+                    <div class="multi-select-actions">
+                      <button type="button" class="btn" @click="apply()">Apply</button>
+                      <button type="button" class="btn ghost" @click="cancel()">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <button type="button" class="vm-filter-reset" @click="resetLocalOdcrUsageFilters()"
+                :disabled="!hasActiveLocalOdcrUsageFilters">Reset all filters</button>
+            </div>
+
+            <section class="odcr-usage-chart-panel" x-show="odcrUsageLoading || odcrUsageLoaded"
+              aria-labelledby="odcr-usage-chart-title">
+              <div class="odcr-usage-chart-header">
+                <div>
+                  <h2 id="odcr-usage-chart-title"
+                    x-text="odcrUsageMetric === 'cost' ? 'Unused cost over time' : 'Unused hours over time'"></h2>
+                  <span x-text="odcrUsageChartGroupBy === 'none' ? 'Daily total' : 'Stacked by ' + odcrUsageChartGroupLabel()"></span>
+                </div>
+                <label class="odcr-chart-group-by">
+                  <span>Group by</span>
+                  <select :value="odcrUsageChartGroupBy" @change="setOdcrUsageChartGroupBy($event.target.value)"
+                    aria-label="Group unused values by">
+                    <option value="none">None</option>
+                    <option value="capacityReservationGroup">Capacity Reservation Group</option>
+                    <option value="capacityReservation" x-show="odcrUsageView === 'reservation'">Capacity reservation</option>
+                    <option value="subscription">Subscription</option>
+                    <option value="resourceGroup">Resource Group</option>
+                    <option value="location">Location</option>
+                    <template x-for="field in odcrUsageBusinessContextFields" :key="field.key">
+                      <option :value="odcrUsageBusinessContextFilterKey(field.key)" x-text="field.name"></option>
+                    </template>
+                  </select>
+                </label>
+              </div>
+              <div class="odcr-usage-chart-stage" :aria-busy="odcrUsageLoading">
+                <div x-ref="odcrUsageChart" class="odcr-usage-chart"
+                  :class="{ 'is-empty': !odcrUsageChartReady }" role="img"
+                  :aria-label="(odcrUsageMetric === 'cost' ? 'Unused cost' : 'Unused hours') + ' by date, grouped by ' + odcrUsageChartGroupLabel()"></div>
+                <div class="odcr-usage-chart-empty" x-show="!odcrUsageChartReady">
+                  <span x-text="odcrUsageChartMessage()"></span>
+                </div>
+              </div>
+            </section>
+
+            <div class="vm-table-frame">
+              <div class="vm-table-scroll">
+                <template x-if="odcrUsageLoading">
+                  <table class="vm-table odcr-usage-table skeleton-table" aria-label="Loading capacity reservations" aria-busy="true">
+                    <thead>
+                      <tr>
+                        <th x-text="odcrUsageView === 'group' ? 'Capacity reservation group' : 'Capacity reservation'"></th>
+                        <th>Subscription</th>
+                        <template x-for="field in odcrUsageBusinessContextFields" :key="field.key">
+                          <th x-text="field.name"></th>
+                        </template>
+                        <th>Resource group</th>
+                        <th>Region</th>
+                        <th>Deployment</th>
+                        <th x-text="odcrUsageView === 'group' ? 'Reservation count' : 'Size'"></th>
+                        <th x-text="odcrUsageView === 'group' ? 'Total reserved quantity' : 'Reserved quantity'"></th>
+                        <th>Last day unused</th>
+                        <th>Last 7 days unused</th>
+                        <th>Last 30 days unused</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="row in [1, 2, 3, 4, 5, 6, 7, 8]" :key="row">
+                        <tr aria-hidden="true">
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <template x-for="field in odcrUsageBusinessContextFields" :key="field.key">
+                            <td><span class="skeleton-block"></span></td>
+                          </template>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+                <template x-if="!odcrUsageLoading && odcrUsageRows.length === 0">
+                  <div class="empty" x-text="odcrUsageView === 'group' ? 'No capacity reservation groups you can access.' : 'No capacity reservations you can access.'"></div>
+                </template>
+                <template x-if="!odcrUsageLoading && odcrUsageRows.length > 0 && filteredOdcrUsageRows.length === 0">
+                  <div class="empty" x-text="odcrUsageView === 'group' ? 'No capacity reservation groups match the selected filters.' : 'No capacity reservations match the selected filters.'"></div>
+                </template>
+                <template x-if="!odcrUsageLoading && filteredOdcrUsageRows.length > 0">
+                  <table class="vm-table odcr-usage-table" :aria-label="odcrUsageView === 'group' ? 'Capacity reservation groups' : 'Capacity reservations'">
+                    <thead>
+                      <tr>
+                        <th :aria-sort="odcrUsageSort.key === (odcrUsageView === 'group' ? 'groupName' : 'reservationDisplayName') ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleOdcrUsageSort(odcrUsageView === 'group' ? 'groupName' : 'reservationDisplayName')">
+                            <span x-text="odcrUsageView === 'group' ? 'Capacity reservation group' : 'Capacity reservation'"></span>
+                            <span x-text="odcrUsageSortIndicator(odcrUsageView === 'group' ? 'groupName' : 'reservationDisplayName')"></span>
+                          </button>
+                        </th>
+                        <th :aria-sort="odcrUsageSort.key === 'subscriptionName' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleOdcrUsageSort('subscriptionName')">Subscription <span x-text="odcrUsageSortIndicator('subscriptionName')"></span></button>
+                        </th>
+                        <template x-for="field in odcrUsageBusinessContextFields" :key="field.key">
+                          <th :aria-sort="odcrUsageSort.key === odcrUsageBusinessContextFilterKey(field.key) ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                            <button class="sort-button" @click="cycleOdcrUsageSort(odcrUsageBusinessContextFilterKey(field.key))">
+                              <span x-text="field.name"></span> <span x-text="odcrUsageSortIndicator(odcrUsageBusinessContextFilterKey(field.key))"></span>
+                            </button>
+                          </th>
+                        </template>
+                        <th :aria-sort="odcrUsageSort.key === 'resourceGroup' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleOdcrUsageSort('resourceGroup')">Resource group <span x-text="odcrUsageSortIndicator('resourceGroup')"></span></button>
+                        </th>
+                        <th :aria-sort="odcrUsageSort.key === 'location' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleOdcrUsageSort('location')">Region <span x-text="odcrUsageSortIndicator('location')"></span></button>
+                        </th>
+                        <th class="tooltip-header" :aria-sort="odcrUsageSort.key === 'deploymentType' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <span class="deployment-header">
+                            <button class="sort-button" @click="cycleOdcrUsageSort('deploymentType')">Deployment <span x-text="odcrUsageSortIndicator('deploymentType')"></span></button>
+                            <span class="zone-mode-control" x-show="odcrUsageView === 'reservation'">
+                              <button type="button" class="zone-mode-switch" role="switch"
+                                :aria-checked="zoneDisplayMode === 'physical'" @click.stop="toggleZoneDisplay()"
+                                :aria-label="zoneDisplayMode === 'logical' ? 'Display physical availability zones' : 'Display logical availability zones'">
+                                <span :class="{ active: zoneDisplayMode === 'logical' }">Log</span>
+                                <span :class="{ active: zoneDisplayMode === 'physical' }">Phy</span>
+                              </button>
+                              <span class="tooltip-content zone-mode-tooltip" role="tooltip">
+                                <span class="tooltip-section">Each datacenter is assigned to a physical zone. Azure maps physical zones to logical zones in each subscription.</span>
+                                <span class="tooltip-section">Different subscriptions might use a different mapping order. Switch to physical zones to compare zone placement across subscriptions.</span>
+                                <span class="tooltip-section">
+                                  <a href="https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview?tabs=azure-cli#physical-and-logical-availability-zones"
+                                    target="_blank" rel="noopener noreferrer">
+                                    Read about physical and logical availability zones
+                                    <span class="external-link-icon" aria-hidden="true">↗</span>
+                                    <span class="sr-only">(opens in a new tab)</span>
+                                  </a>
+                                </span>
+                              </span>
+                            </span>
+                          </span>
+                        </th>
+                        <th :aria-sort="odcrUsageSort.key === (odcrUsageView === 'group' ? 'reservationCount' : 'vmSize') ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleOdcrUsageSort(odcrUsageView === 'group' ? 'reservationCount' : 'vmSize')">
+                            <span x-text="odcrUsageView === 'group' ? 'Reservation count' : 'Size'"></span>
+                            <span x-text="odcrUsageSortIndicator(odcrUsageView === 'group' ? 'reservationCount' : 'vmSize')"></span>
+                          </button>
+                        </th>
+                        <th :aria-sort="odcrUsageSort.key === (odcrUsageView === 'group' ? 'totalReservedQuantity' : 'reservedQuantity') ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleOdcrUsageSort(odcrUsageView === 'group' ? 'totalReservedQuantity' : 'reservedQuantity')">
+                            <span x-text="odcrUsageView === 'group' ? 'Total reserved quantity' : 'Reserved quantity'"></span>
+                            <span x-text="odcrUsageSortIndicator(odcrUsageView === 'group' ? 'totalReservedQuantity' : 'reservedQuantity')"></span>
+                          </button>
+                        </th>
+                        <th class="tooltip-header" :aria-sort="odcrUsageSort.key === 'lastDay' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <span class="header-with-info">
+                            <button class="sort-button" @click="cycleOdcrUsageSort('lastDay')">Last day unused <span x-text="odcrUsageSortIndicator('lastDay')"></span></button>
+                            <span class="info-tooltip" tabindex="0" :aria-label="odcrUsagePeriodDescription(1)">i
+                              <span class="tooltip-content usage-period-tooltip" role="tooltip">
+                                <template x-for="line in odcrUsagePeriodLines(1)" :key="line">
+                                  <span class="tooltip-section" x-text="line"></span>
+                                </template>
+                              </span>
+                            </span>
+                          </span>
+                        </th>
+                        <th class="tooltip-header" :aria-sort="odcrUsageSort.key === 'last7Days' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <span class="header-with-info">
+                            <button class="sort-button" @click="cycleOdcrUsageSort('last7Days')">Last 7 days unused <span x-text="odcrUsageSortIndicator('last7Days')"></span></button>
+                            <span class="info-tooltip" tabindex="0" :aria-label="odcrUsagePeriodDescription(7)">i
+                              <span class="tooltip-content usage-period-tooltip" role="tooltip">
+                                <template x-for="line in odcrUsagePeriodLines(7)" :key="line">
+                                  <span class="tooltip-section" x-text="line"></span>
+                                </template>
+                              </span>
+                            </span>
+                          </span>
+                        </th>
+                        <th class="tooltip-header" :aria-sort="odcrUsageSort.key === 'last30Days' ? (odcrUsageSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <span class="header-with-info">
+                            <button class="sort-button" @click="cycleOdcrUsageSort('last30Days')">Last 30 days unused <span x-text="odcrUsageSortIndicator('last30Days')"></span></button>
+                            <span class="info-tooltip" tabindex="0" :aria-label="odcrUsagePeriodDescription(30)">i
+                              <span class="tooltip-content usage-period-tooltip" role="tooltip">
+                                <template x-for="line in odcrUsagePeriodLines(30)" :key="line">
+                                  <span class="tooltip-section" x-text="line"></span>
+                                </template>
+                              </span>
+                            </span>
+                          </span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="detail in odcrUsageRenderedRows()" :key="detail.id">
+                        <tr :class="{
+                            'odcr-group-row': odcrUsageView === 'group' && detail.kind === 'parent',
+                            'expanded': odcrUsageView === 'group' && detail.kind === 'parent' && expandedOdcrUsageGroupId === detail.row.id,
+                            'odcr-group-detail-row': detail.kind !== 'parent'
+                          }"
+                          :tabindex="odcrUsageView === 'group' && detail.kind === 'parent' ? 0 : null"
+                          :aria-expanded="odcrUsageView === 'group' && detail.kind === 'parent' ? expandedOdcrUsageGroupId === detail.row.id : null"
+                          @click="if (detail.kind === 'parent') toggleOdcrUsageGroup(detail.row)"
+                          @keydown.enter.prevent="if (detail.kind === 'parent') toggleOdcrUsageGroup(detail.row)"
+                          @keydown.space.prevent="if (detail.kind === 'parent') toggleOdcrUsageGroup(detail.row)">
+                          <td>
+                            <span class="resource-name" x-show="detail.kind === 'parent'">
+                              <span class="scope-tree-toggle odcr-group-toggle"
+                                :class="{ expanded: expandedOdcrUsageGroupId === detail.row.id }"
+                                x-show="odcrUsageView === 'group'" aria-hidden="true">
+                                <span>&#9656;</span>
+                              </span>
+                              <img class="resource-type-icon"
+                                :src="odcrUsageView === 'group' ? 'icons/capacity-reservation-groups.svg' : 'icons/reserved-capacity.svg'"
+                                alt="" :title="odcrUsageView === 'group' ? 'Capacity reservation group' : 'Capacity reservation'" />
+                              <span x-text="odcrUsageView === 'group' ? detail.row.name : odcrUsageReservationDisplayName(detail.row)"
+                                :title="odcrUsageView === 'group' ? detail.row.name : odcrUsageReservationDisplayName(detail.row)"></span>
+                              <span class="deleted-badge" x-show="detail.row.resourceExists === false">Deleted</span>
+                            </span>
+                            <span class="odcr-child-name" x-show="detail.kind === 'child'">
+                              <img class="resource-type-icon" src="icons/reserved-capacity.svg" alt="" title="Capacity reservation" />
+                              <span x-text="detail.row.name || 'Unnamed reservation'"></span>
+                              <span class="deleted-badge" x-show="detail.row.resourceExists === false">Deleted</span>
+                            </span>
+                            <span class="odcr-empty-child muted" x-show="detail.kind === 'empty'">No reservations</span>
+                          </td>
+                          <td x-text="detail.kind === 'parent' ? (detail.row.subscriptionName || detail.row.subscriptionId) : ''"></td>
+                          <template x-for="field in odcrUsageBusinessContextFields" :key="field.key">
+                            <td>
+                              <span x-show="detail.kind === 'parent'"
+                                :class="odcrUsageBusinessContextValue(detail.row, field.key) === null ? 'context-unmapped' : ''"
+                                x-text="detail.kind === 'parent' ? odcrUsageBusinessContextDisplay(detail.row, field.key) : ''"></span>
+                            </td>
+                          </template>
+                          <td x-text="detail.kind === 'parent' ? detail.row.resourceGroup : ''"></td>
+                          <td x-text="detail.kind === 'parent' ? (locationDisplay(detail.row) || '—') : ''"></td>
+                          <td x-text="detail.kind === 'parent' ? odcrUsageDeploymentDisplay(detail.row) : ''"></td>
+                          <td>
+                            <span x-show="detail.kind === 'parent'"
+                              x-text="odcrUsageView === 'group' ? detail.row.reservationCount : (detail.row.vmSize || '—')"></span>
+                          </td>
+                          <td x-text="detail.kind === 'parent'
+                            ? (odcrUsageView === 'group' ? detail.row.totalReservedQuantity : (detail.row.reservedQuantity ?? '—'))
+                            : detail.kind === 'child' ? (detail.row.reservedQuantity ?? '—') : ''"></td>
+                          <td x-text="detail.kind === 'empty' ? '' : formatOdcrUsage(detail.row, 'lastDay')"></td>
+                          <td x-text="detail.kind === 'empty' ? '' : formatOdcrUsage(detail.row, 'last7Days')"></td>
+                          <td x-text="detail.kind === 'empty' ? '' : formatOdcrUsage(detail.row, 'last30Days')"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+              </div>
+              <div class="vm-table-footer">
+                <div class="vm-footer-left">
+                  <span class="vm-slice-count"
+                    x-text="'Showing ' + odcrUsagePageStart() + ' - ' + odcrUsagePageEnd() + ' of ' + filteredOdcrUsageRows.length + '.'"></span>
+                  <label class="vm-page-size">
+                    <span>Display count:</span>
+                    <select :value="odcrUsagePageSize" @change="setOdcrUsagePageSize($event.target.value)"
+                      :aria-label="odcrUsageView === 'group' ? 'Capacity reservation groups per page' : 'Capacity reservations per page'">
+                      <option value="20">20</option>
+                      <option value="50">50</option>
+                      <option value="100">100</option>
+                      <option value="200">200</option>
+                    </select>
+                  </label>
+                </div>
+                <nav class="vm-pagination" x-show="filteredOdcrUsageRows.length > odcrUsagePageSize"
+                  :aria-label="odcrUsageView === 'group' ? 'Capacity reservation group pages' : 'Capacity reservation pages'">
+                  <button type="button" class="vm-page-button" :disabled="odcrUsagePage === 1"
+                    @click="setOdcrUsagePage(1)" aria-label="First page" title="First page">&laquo;</button>
+                  <button type="button" class="vm-page-button" :disabled="odcrUsagePage === 1"
+                    @click="setOdcrUsagePage(odcrUsagePage - 1)" aria-label="Previous page" title="Previous page">&lsaquo;</button>
+                  <span class="vm-page-status" x-text="'Page ' + odcrUsagePage + ' of ' + odcrUsagePageCount"></span>
+                  <button type="button" class="vm-page-button" :disabled="odcrUsagePage === odcrUsagePageCount"
+                    @click="setOdcrUsagePage(odcrUsagePage + 1)" aria-label="Next page" title="Next page">&rsaquo;</button>
+                  <button type="button" class="vm-page-button" :disabled="odcrUsagePage === odcrUsagePageCount"
+                    @click="setOdcrUsagePage(odcrUsagePageCount)" aria-label="Last page" title="Last page">&raquo;</button>
+                </nav>
+                <div class="vm-footer-right">
+                  <span x-show="odcrUsageLoading" class="spin" aria-label="Loading"></span>
+                  <span x-show="!odcrUsageLoading && odcrUsageLoadDurationMs !== null"
+                    x-text="odcrUsageLoadedSummaryText()"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
+    </main>
+
+    <template x-if="dcDetailsOpen">
+      <div class="drawer-backdrop" @click.self="closeDetails()" @keydown.escape.window="closeDetails()">
+        <aside class="details-drawer run-history-drawer" role="dialog" aria-modal="true"
+          aria-labelledby="dc-details-title">
+          <div class="details-drawer-head">
+            <div>
+              <h2 id="dc-details-title" x-text="dcDetailsPipeline ? (dcDetailsPipeline.name + ' — Details') : 'Details'"></h2>
+              <span class="muted">Live pipeline status and run history.</span>
+            </div>
+            <div class="details-head-actions">
+              <button class="icon-btn" title="Refresh status and history" aria-label="Refresh status and history"
+                :class="{ spinning: dcDetailsLoading }" @click="refreshDetails()">&#8635;</button>
+              <button type="button" class="icon-btn" @click="closeDetails()" aria-label="Close">&times;</button>
+            </div>
+          </div>
+          <div class="details-drawer-body">
+            <template x-if="dcDetailsPipeline">
+              <div class="dc-details-status">
+                <h3>Status</h3>
+                <template x-if="!dcDetailsStatus"><div class="placeholder">Loading status…</div></template>
+                <template x-if="dcDetailsStatus && dcDetailsStatus.error">
+                  <div class="error" x-text="'Could not load status: ' + (dcDetailsStatus?.error || '')"></div>
+                </template>
+                <template x-if="dcDetailsStatus && !dcDetailsStatus.error">
+                  <div>
+                    <template x-if="dcDetailsStatus?.warning">
+                      <div class="warning" x-text="dcDetailsStatus?.warning"></div>
+                    </template>
+                    <table>
+                      <tbody>
+                        <tr>
+                          <td class="key">Has data</td>
+                          <td><span class="badge" :class="dcDetailsStatus?.hasData ? 'ok' : 'muted'"
+                            x-text="dcDetailsStatus?.hasData ? 'Yes' : 'No'"></span></td>
+                        </tr>
+                        <tr x-show="progressForKind(dcDetailsPipeline?.id)">
+                          <td class="key">Progress</td>
+                          <td>
+                            <div class="progress-row">
+                              <progress max="100" :value="runningPercent(progressForKind(dcDetailsPipeline?.id)) || 0"></progress>
+                              <span class="mono" x-text="progressText(progressForKind(dcDetailsPipeline?.id))"></span>
+                            </div>
+                          </td>
+                        </tr>
+                        <tr x-show="['vm_usage', 'cr_usage', 'activity_log'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Coverage</td>
+                          <td class="mono" x-text="coverageText(dcDetailsStatus)"></td>
+                        </tr>
+                        <tr x-show="['vm_usage', 'cr_usage', 'activity_log'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Finalized through</td>
+                          <td class="mono" x-text="dcDetailsStatus?.finalizedThrough || '—'"></td>
+                        </tr>
+                        <tr x-show="['vm_usage', 'cr_usage', 'activity_log'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Staleness</td>
+                          <td>
+                            <span x-show="dcDetailsStatus?.stalenessDays === null && (dcDetailsStatus?.stalenessMinutes === undefined || dcDetailsStatus?.stalenessMinutes === null)" class="mono">—</span>
+                            <span x-show="dcDetailsStatus?.stalenessDays !== null || (dcDetailsStatus?.stalenessMinutes !== undefined && dcDetailsStatus?.stalenessMinutes !== null)" class="badge"
+                              :class="dcDetailsStatus?.isStale ? 'warn' : 'ok'"
+                              x-text="stalenessText(dcDetailsStatus)"></span>
+                          </td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'zone_mapping'">
+                          <td class="key">Subscriptions stored</td>
+                          <td class="mono" x-text="dcDetailsStatus?.subscriptionsStored ?? '—'"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'zone_mapping'">
+                          <td class="key">Regions known</td>
+                          <td class="mono" x-text="dcDetailsStatus?.regionsKnown ?? '—'"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'zone_mapping'">
+                          <td class="key">Last updated</td>
+                          <td class="mono" x-text="dcDetailsStatus?.lastUpdated ? formatDateTime(dcDetailsStatus?.lastUpdated) : '—'"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'compute_skus'">
+                          <td class="key">Unique VM SKUs</td>
+                          <td class="mono" x-text="dcDetailsStatus?.skuCount ?? '—'"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'compute_skus'">
+                          <td class="key">SKU-location records</td>
+                          <td class="mono" x-text="dcDetailsStatus?.skuLocationCount ?? '—'"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'compute_skus'">
+                          <td class="key">Source subscription</td>
+                          <td class="mono" x-text="dcDetailsStatus?.sourceSubscriptionId || '—'"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'compute_skus'">
+                          <td class="key">Last updated</td>
+                          <td class="mono" x-text="dcDetailsStatus?.lastUpdated ? formatDateTime(dcDetailsStatus?.lastUpdated) : '—'"></td>
+                        </tr>
+                        <tr x-show="['subscription_reference', 'location_reference'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Items</td>
+                          <td class="mono" x-text="dcDetailsStatus?.itemCount ?? '—'"></td>
+                        </tr>
+                        <tr x-show="['subscription_reference', 'location_reference', 'subscription_context'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Generation</td>
+                          <td class="mono" x-text="dcDetailsStatus?.generation || '—'"></td>
+                        </tr>
+                        <tr x-show="['subscription_reference', 'location_reference', 'subscription_context'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Published</td>
+                          <td class="mono" x-text="dcDetailsStatus?.publishedAt ? formatDateTime(dcDetailsStatus?.publishedAt) : '—'"></td>
+                        </tr>
+                        <tr x-show="['subscription_reference', 'location_reference', 'subscription_context'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Stale</td>
+                          <td><span class="badge" :class="dcDetailsStatus?.stale ? 'warn' : 'ok'"
+                            x-text="dcDetailsStatus?.stale ? 'Yes' : 'No'"></span></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'subscription_context'">
+                          <td class="key">Fields</td>
+                          <td class="mono" x-text="`${dcDetailsStatus?.enabledFieldCount ?? 0} enabled / ${dcDetailsStatus?.configuredFieldCount ?? 0} configured`"></td>
+                        </tr>
+                        <tr x-show="dcDetailsPipeline?.id === 'subscription_context'">
+                          <td class="key">Dynamic fields</td>
+                          <td class="mono" x-text="dcDetailsStatus?.dynamicFieldCount ?? '—'"></td>
+                        </tr>
+                        <tr x-show="!['subscription_reference', 'location_reference', 'subscription_context'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Current scope</td>
+                          <td class="mono" x-text="dcDetailsStatus?.currentScope || '—'"></td>
+                        </tr>
+                        <tr x-show="!['subscription_reference', 'location_reference', 'subscription_context'].includes(dcDetailsPipeline?.id)">
+                          <td class="key">Last loaded scope</td>
+                          <td class="mono" x-text="dcDetailsStatus?.lastLoadedScope || '—'"></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <h3 class="dc-details-history-head">Run history</h3>
+            <span class="muted">Most recent runs first. Running rows show live progress.</span>
+            <template x-if="dcDetailsError">
+              <div class="error" x-text="'Could not load run history: ' + dcDetailsError"></div>
+            </template>
+            <template x-if="!dcDetailsError && dcDetailsRuns.length">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Started</th>
+                    <th>Action</th>
+                    <th>Trigger</th>
+                    <th>Status</th>
+                    <th>Result</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="run in dcDetailsRuns" :key="run.rowKey">
+                    <tr>
+                      <td class="mono" x-text="run.startedAt ? formatDateTime(run.startedAt) : '—'"></td>
+                      <td x-text="run.action || '—'"></td>
+                      <td x-text="run.trigger || '—'"></td>
+                      <td>
+                        <span class="badge" :class="collectorStatusDisplay(run.status === 'running', run.status, run.progress).cls"
+                          :title="collectorStatusDisplay(run.status === 'running', run.status, run.progress).title">
+                          <span x-show="run.status === 'running'" class="spin"></span>
+                          <span x-text="collectorStatusDisplay(run.status === 'running', run.status, run.progress).text"></span>
+                        </span>
+                      </td>
+                      <td class="mono" x-text="dcRunSummaryText(run)"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </template>
+            <template x-if="!dcDetailsError && !dcDetailsRuns.length && !dcDetailsLoading">
+              <div class="placeholder">No runs recorded yet.</div>
+            </template>
+            <template x-if="dcDetailsLoading">
+              <div class="placeholder">Loading run history…</div>
+            </template>
+            <div class="run-history-actions" x-show="dcDetailsContinuation">
+              <button class="btn ghost" :disabled="dcDetailsLoading" @click="loadRunHistory()">Load more</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </template>
+
+    <template x-if="dcConfigOpen && dcConfigDraft">
+      <div class="drawer-backdrop" @click.self="closePipelineConfig()" @keydown.escape.window="closePipelineConfig()">
+        <aside class="details-drawer dc-config-drawer" role="dialog" aria-modal="true"
+          aria-labelledby="dc-config-title">
+          <div class="details-drawer-head">
+            <div>
+              <h2 id="dc-config-title" x-text="dcConfigDraft.name + ' — Schedule'"></h2>
+              <span class="muted">Disabled pipelines run on manual refresh only.</span>
+            </div>
+            <button type="button" class="icon-btn" @click="closePipelineConfig()" aria-label="Close">&times;</button>
+          </div>
+          <div class="details-drawer-body">
+            <template x-if="dcConfigError">
+              <div class="error" x-text="dcConfigError"></div>
+            </template>
+            <div class="dc-config-field">
+              <span class="dc-config-legend">State</span>
+              <label class="dc-config-radio">
+                <input type="radio" name="dc-config-state" :checked="dcConfigDraft.enabled"
+                  @change="dcConfigDraft.enabled = true">
+                <span>Enabled — runs on a schedule</span>
+              </label>
+              <label class="dc-config-radio" :class="{ disabled: !dcConfigDraft.canDisable }">
+                <input type="radio" name="dc-config-state" :checked="!dcConfigDraft.enabled"
+                  @change="dcConfigDraft.enabled = false" :disabled="!dcConfigDraft.canDisable">
+                <span>Disabled — manual refresh only</span>
+              </label>
+              <span class="muted" x-show="!dcConfigDraft.canDisable">This pipeline is infrastructural and cannot be disabled.</span>
+            </div>
+            <div class="dc-config-field" x-show="dcConfigDraft.enabled">
+              <label class="dc-config-legend" for="dc-config-frequency">Frequency</label>
+              <select id="dc-config-frequency"
+                @change="dcConfigDraft.frequencySeconds = Number($event.target.value)">
+                <template x-for="choice in dcFrequencyChoices(dcConfigDraft?.frequencySeconds)" :key="choice.value">
+                  <option :value="choice.value" :selected="choice.value === dcConfigDraft?.frequencySeconds"
+                    x-text="choice.label"></option>
+                </template>
+              </select>
+            </div>
+            <div class="dc-config-actions">
+              <button class="btn" :disabled="dcConfigSaving" @click="savePipelineConfig()">Save</button>
+              <button class="btn ghost" :disabled="dcConfigSaving" @click="closePipelineConfig()">Cancel</button>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </template>
+
+    <template x-if="businessContextEditorOpen && businessContextDraft">
+      <div class="drawer-backdrop" @click.self="closeBusinessContextEditor()" @keydown.escape.window="closeBusinessContextEditor()">
+        <aside class="details-drawer business-context-editor" role="dialog" aria-modal="true"
+        aria-labelledby="business-context-editor-title">
+        <div class="details-drawer-head">
+          <div>
+            <h2 id="business-context-editor-title" x-text="businessContextEditingKey ? 'Edit context field' : 'Add context field'"></h2>
+            <span class="muted">Map subscriptions to business context used by reports.</span>
+          </div>
+          <button type="button" class="icon-btn" @click="closeBusinessContextEditor()"
+            :disabled="businessContextPreviewing || businessContextSaving || businessContextDeleting" aria-label="Close">&times;</button>
+        </div>
+
+        <div class="details-drawer-body business-context-form" x-show="businessContextDraft">
+          <div class="context-field-grid">
+            <label class="context-form-field">
+              <span>Name</span>
+              <input type="text" maxlength="80" x-model="businessContextDraft.name"
+                @input="invalidateBusinessContextPreview()" placeholder="Business Unit" />
+            </label>
+            <label class="context-form-field">
+              <span>Field key</span>
+              <input type="text" maxlength="32" pattern="[a-z][a-z0-9_]{1,31}"
+                :disabled="!!businessContextEditingKey" x-model="businessContextDraft.key"
+                @input="businessContextDraft.key = $event.target.value.toLowerCase(); invalidateBusinessContextPreview()"
+                placeholder="business_unit" />
+              <small>Lowercase letters, numbers, and underscores. Immutable after creation.</small>
+            </label>
+          </div>
+
+          <label class="scope-enable-toggle context-enabled-toggle">
+            <input type="checkbox" x-model="businessContextDraft.enabled" @change="invalidateBusinessContextPreview()" />
+            <span class="scope-toggle-track"></span>
+            <strong>Enabled</strong>
+          </label>
+
+          <fieldset class="context-source-selector">
+            <legend>Value source</legend>
+            <label><input type="radio" name="context-source" value="manual_file"
+              :checked="businessContextDraft.valueSource.type === 'manual_file'"
+              @change="setBusinessContextSource('manual_file')" /> Mapping file</label>
+            <label><input type="radio" name="context-source" value="management_group_level"
+              :checked="businessContextDraft.valueSource.type === 'management_group_level'"
+              @change="setBusinessContextSource('management_group_level')" /> Management group</label>
+            <label><input type="radio" name="context-source" value="subscription_tag"
+              :checked="businessContextDraft.valueSource.type === 'subscription_tag'"
+              @change="setBusinessContextSource('subscription_tag')" /> Subscription tag</label>
+          </fieldset>
+
+          <section class="context-source-settings" x-show="businessContextDraft.valueSource.type === 'manual_file'">
+            <h3>Mapping file</h3>
+            <div class="context-template-actions">
+              <button type="button" class="btn ghost" @click="downloadBusinessContextTemplate('csv')">Download CSV template</button>
+              <button type="button" class="btn ghost" @click="downloadBusinessContextTemplate('xlsx')">Download Excel template</button>
+            </div>
+            <label class="context-form-field">
+              <span>Completed mapping file</span>
+              <input type="file" accept=".csv,.xlsx" @change="selectBusinessContextFile($event)" />
+              <small x-text="businessContextFile ? businessContextFile.name : 'CSV or Excel (.xlsx), up to 10 MiB.'"></small>
+            </label>
+          </section>
+
+          <section class="context-source-settings" x-show="businessContextDraft.valueSource.type === 'management_group_level'">
+            <h3>Management group</h3>
+            <div class="context-field-grid">
+              <label class="context-form-field">
+                <span>Level</span>
+                <select x-model.number="businessContextDraft.valueSource.config.level" @change="invalidateBusinessContextPreview()">
+                  <template x-for="level in [1,2,3,4,5,6]" :key="level"><option :value="level" x-text="`Level ${level}`"></option></template>
+                </select>
+              </label>
+              <div class="context-form-field">
+                <span>Output</span>
+                <div class="context-segmented">
+                  <label><input type="radio" name="mg-output" value="selected_level"
+                    x-model="businessContextDraft.valueSource.config.outputMode" @change="invalidateBusinessContextPreview()" /> Selected level only</label>
+                  <label><input type="radio" name="mg-output" value="hierarchy_path"
+                    x-model="businessContextDraft.valueSource.config.outputMode" @change="invalidateBusinessContextPreview()" /> Full hierarchy path</label>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="context-source-settings" x-show="businessContextDraft.valueSource.type === 'subscription_tag'">
+            <h3>Subscription tag</h3>
+            <label class="context-form-field">
+              <span>Tag key</span>
+              <input type="text" maxlength="512" list="business-context-tag-options"
+                x-model="businessContextDraft.valueSource.config.tagKey" @input="invalidateBusinessContextPreview()"
+                placeholder="Environment" />
+              <datalist id="business-context-tag-options">
+                <template x-for="option in businessContextTagOptions" :key="option.key">
+                  <option :value="option.key" :label="`${option.subscriptionCount} subscriptions`"></option>
+                </template>
+              </datalist>
+              <small x-show="businessContextTagOptionsLoading">Loading common tag keys…</small>
+              <small x-show="!businessContextTagOptionsLoading">Choose a suggested key or enter another key.</small>
+            </label>
+          </section>
+
+          <div class="error" x-show="businessContextEditorError" x-text="businessContextEditorError"></div>
+
+          <section class="context-preview" x-show="businessContextPreview">
+            <div class="context-preview-head">
+              <h3>Preview</h3>
+              <span class="badge ok">Ready to save</span>
+            </div>
+            <template x-for="item in [
+              { label: 'Configured scope', summary: businessContextPreview && businessContextPreview.inScope },
+              { label: 'Outside configured scope', summary: businessContextPreview && businessContextPreview.outsideScope }
+            ]" :key="item.label">
+              <div class="context-preview-section" x-show="item.summary">
+                <h4 x-text="item.label"></h4>
+                <div class="context-preview-metrics">
+                  <span><strong x-text="item.summary ? item.summary.mappedSubscriptions : 0"></strong><small>Mapped</small></span>
+                  <span><strong x-text="item.summary ? item.summary.unmappedSubscriptions : 0"></strong><small>Not mapped</small></span>
+                  <span><strong x-text="item.summary ? item.summary.coveragePercent + '%' : '0%'"></strong><small>Coverage</small></span>
+                </div>
+                <div class="context-top-values" x-show="item.summary && businessContextTopValues(item.summary).length">
+                  <span class="muted">Most common values</span>
+                  <template x-for="value in (item.summary ? businessContextTopValues(item.summary) : [])" :key="value.value">
+                    <div><span x-text="value.value"></span><strong x-text="value.subscriptionCount"></strong></div>
+                  </template>
+                </div>
+                <div class="context-missing-reasons" x-show="item.summary && Object.keys(item.summary.unmappedByReason || {}).length">
+                  <template x-for="reason in Object.entries(item.summary ? item.summary.unmappedByReason || {} : {})" :key="reason[0]">
+                    <span><span x-text="reason[0].replaceAll('_', ' ')"></span>: <strong x-text="reason[1]"></strong></span>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </section>
+
+          <div class="context-field-audit" x-show="businessContextEditingKey && businessContextDraft.updatedAt">
+            Last updated <strong x-text="businessContextDraft.updatedAt ? formatDateTime(businessContextDraft.updatedAt) : ''"></strong>
+            <span x-show="businessContextDraft.updatedBy && businessContextDraft.updatedBy.displayName"
+              x-text="` by ${businessContextDraft.updatedBy ? businessContextDraft.updatedBy.displayName : ''}`"></span>
+          </div>
+        </div>
+
+        <div class="business-context-editor-actions">
+          <button type="button" class="btn danger" x-show="businessContextEditingKey" @click="deleteBusinessContext()"
+            :disabled="businessContextDeleting || businessContextSaving || businessContextPreviewing">
+            <span x-show="businessContextDeleting" class="spin"></span> Delete field
+          </button>
+          <span class="action-spacer"></span>
+          <button type="button" class="btn ghost" @click="closeBusinessContextEditor()"
+            :disabled="businessContextDeleting || businessContextSaving || businessContextPreviewing">Cancel</button>
+          <button type="button" class="btn ghost" @click="previewBusinessContext()"
+            :disabled="!businessContextCanPreview() || businessContextPreviewing || businessContextSaving">
+            <span x-show="businessContextPreviewing" class="spin"></span> Preview values
+          </button>
+          <button type="button" class="btn" @click="saveBusinessContext()"
+            :disabled="!businessContextPreviewValid || businessContextSaving || businessContextPreviewing">
+            <span x-show="businessContextSaving" class="spin"></span> Save field
+          </button>
+        </div>
+        </aside>
+      </div>
+    </template>
+
+    <div class="notification-backdrop" x-show="user.capabilities.administer && notificationDrawerOpen" x-transition.opacity
+      @click.self="notificationDrawerOpen = false">
+      <aside class="notification-drawer" role="dialog" aria-modal="true" aria-labelledby="notifications-title">
+        <div class="notification-drawer-head">
+          <div>
+            <h2 id="notifications-title">Notifications</h2>
+            <span>Data refresh and flush operations</span>
+          </div>
+          <button type="button" class="icon-btn" @click="notificationDrawerOpen = false" aria-label="Close notifications">&times;</button>
+        </div>
+        <div class="notification-toolbar">
+          <button class="btn danger" :disabled="notificationsDeletingAll || notifications.length === 0"
+            @click="discardAllNotifications()">Discard all terminated</button>
+        </div>
+        <div class="notification-list">
+          <div class="empty" x-show="notifications.length === 0">No recent or running tasks.</div>
+          <template x-for="n in notifications" :key="n.instanceId">
+            <article class="notification-item">
+              <span class="notification-status-dot" :class="statusClass(n.runtimeStatus)"></span>
+              <div class="notification-copy">
+                <strong x-text="n.label"></strong>
+                <div>
+                  <span class="badge" :class="collectorStatusDisplay(n.isRunning, n.runtimeStatus, n.progress).cls"
+                    :title="collectorStatusDisplay(n.isRunning, n.runtimeStatus, n.progress).title">
+                    <span x-show="n.isRunning" class="spin"></span>
+                    <span x-text="collectorStatusDisplay(n.isRunning, n.runtimeStatus, n.progress).text"></span>
+                  </span>
+                </div>
+                <small x-text="timingText(n)"></small>
+              </div>
+              <button class="icon-btn danger" title="Discard notification"
+                :disabled="n.isRunning || notificationDeleting[n.instanceId] === true"
+                @click="discardNotification(n)" aria-label="Discard notification">&times;</button>
+            </article>
+          </template>
+        </div>
+      </aside>
+    </div>
+
+    <template x-if="coverageEditorVms.length > 0">
+      <div class="drawer-backdrop" @click.self="closeCoverageEditor()" @keydown.escape.window="closeCoverageEditor()">
+        <aside class="details-drawer coverage-editor" role="dialog" aria-modal="true" aria-labelledby="coverage-editor-title">
+          <div class="details-drawer-head">
+            <div class="drawer-resource-summary">
+              <h2 id="coverage-editor-title" x-text="coverageEditorIsBulk ? 'Edit ODCR coverage decision' : 'ODCR coverage'"></h2>
+              <div class="drawer-resource-name resource-name" x-show="!coverageEditorIsBulk">
+                <img class="resource-type-icon" :src="resourceTypeIcon(coverageEditorVm.resourceType)" alt=""
+                  @error="useGenericResourceIcon($event)" />
+                <strong x-text="coverageEditorVm.name"></strong>
+              </div>
+              <div class="coverage-bulk-summary" x-show="coverageEditorIsBulk"
+                x-text="coverageEditorVms.length + ' selected VMs'"></div>
+              <div class="drawer-resource-meta" x-show="!coverageEditorIsBulk">
+                <span><span class="muted">Resource group</span><strong x-text="coverageEditorVm.resourceGroup"></strong></span>
+                <span><span class="muted">Subscription</span><strong x-text="coverageEditorVm.subscriptionName || coverageEditorVm.subscriptionId"></strong></span>
+                <span><span class="muted">Location</span><strong x-text="locationDisplay(coverageEditorVm)"></strong></span>
+              </div>
+            </div>
+            <button type="button" class="icon-btn" :disabled="coverageSaving" @click="closeCoverageEditor()" aria-label="Close">&times;</button>
+          </div>
+          <div class="details-drawer-body coverage-form">
+            <div class="coverage-option-row" role="radiogroup" aria-labelledby="coverage-decision-label">
+              <span class="coverage-option-label" id="coverage-decision-label">Coverage decision</span>
+              <div class="coverage-radio-row">
+                <label><input type="radio" name="coverage-decision" value="required"
+                  :checked="coverageDraft.decision === 'required'"
+                  @change="selectCoverageDecision('required')" /> Required</label>
+                <label><input type="radio" name="coverage-decision" value="not_required"
+                  :checked="coverageDraft.decision === 'not_required'"
+                  @change="selectCoverageDecision('not_required')" /> Not required</label>
+              </div>
+            </div>
+            <div class="coverage-option-row" role="radiogroup" aria-labelledby="coverage-priority-label"
+              x-show="coverageDraft.decision === 'required'">
+              <span class="coverage-option-label" id="coverage-priority-label">Priority</span>
+              <div class="coverage-radio-row">
+                <label><input type="radio" name="coverage-priority" value="low" x-model="coverageDraft.priority" /> Low</label>
+                <label><input type="radio" name="coverage-priority" value="medium" x-model="coverageDraft.priority" /> Medium</label>
+                <label><input type="radio" name="coverage-priority" value="high" x-model="coverageDraft.priority" /> High</label>
+              </div>
+            </div>
+            <label class="coverage-note-label" for="coverage-note">Note <span class="muted">Optional</span></label>
+            <textarea id="coverage-note" rows="5" maxlength="500" x-model="coverageDraft.note"
+              placeholder="Add context for this decision"></textarea>
+            <div class="character-count" x-text="coverageDraft.note.length + ' / 500'"></div>
+            <div class="coverage-audit" x-show="!coverageEditorIsBulk && coverageEditorVm.odcrCoverage && coverageEditorVm.odcrCoverage.updatedAt">
+              Last edited by
+              <strong x-text="coverageEditorVm.odcrCoverage && coverageEditorVm.odcrCoverage.updatedBy.displayName"></strong>
+              <span x-text="coverageEditorVm.odcrCoverage && formatDateTime(coverageEditorVm.odcrCoverage.updatedAt)"></span>
+            </div>
+          </div>
+          <div class="coverage-editor-actions">
+            <button type="button" class="btn danger" x-show="coverageEditorHasMarkedDecision"
+              :disabled="coverageSaving" @click="saveCoverageDecision(true)">Clear decision</button>
+            <span class="action-spacer"></span>
+            <button type="button" class="btn ghost" :disabled="coverageSaving" @click="closeCoverageEditor()">Cancel</button>
+            <button type="button" class="btn" :disabled="coverageSaving" @click="saveCoverageDecision(false)">
+              <span x-text="coverageSaving ? 'Saving…' : 'Save'"></span>
+            </button>
+          </div>
+        </aside>
+      </div>
+    </template>
+
+    <template x-if="odcrDetailsVm">
+      <div class="drawer-backdrop" @click.self="closeOdcrDetails()" @keydown.escape.window="closeOdcrDetails()">
+        <aside class="details-drawer" role="dialog" aria-modal="true" aria-labelledby="odcr-details-title">
+          <div class="details-drawer-head">
+            <div class="drawer-resource-summary">
+              <h2 id="odcr-details-title">ODCR prerequisites</h2>
+              <div class="drawer-resource-name resource-name">
+                <img class="resource-type-icon" :src="resourceTypeIcon(odcrDetailsVm.resourceType)" alt=""
+                  :title="odcrDetailsVm.resourceType || 'Azure resource'"
+                  @error="useGenericResourceIcon($event)" />
+                <strong x-text="odcrDetailsVm.name"></strong>
+              </div>
+              <div class="drawer-resource-meta">
+                <span><span class="muted">Resource group</span><strong x-text="odcrDetailsVm.resourceGroup"></strong></span>
+                <span><span class="muted">Subscription</span><strong x-text="odcrDetailsVm.subscriptionName || odcrDetailsVm.subscriptionId"></strong></span>
+                <span><span class="muted">Location</span><strong x-text="locationDisplay(odcrDetailsVm)"></strong></span>
+              </div>
+            </div>
+            <button type="button" class="icon-btn" @click="closeOdcrDetails()" aria-label="Close">&times;</button>
+          </div>
+          <div class="details-drawer-body">
+            <template x-for="group in odcrRequirementGroups()" :key="group.key">
+              <section class="requirement-group">
+                <button type="button" class="requirement-group-toggle" @click="toggleOdcrGroup(group.key)"
+                  :aria-expanded="odcrGroupOpen[group.key]">
+                  <span x-text="group.label"></span>
+                  <svg class="drawer-icon chevron-icon" :class="{ open: odcrGroupOpen[group.key] }"
+                    viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6" /></svg>
+                </button>
+                <div x-show="odcrGroupOpen[group.key]" class="requirement-group-items">
+                  <template x-for="requirement in group.items" :key="requirement.key">
+                    <section class="requirement-item">
+                      <div class="requirement-heading">
+                        <h3 x-text="requirement.label"></h3>
+                        <span class="requirement-state" :class="odcrRequirementClass(requirement.status)">
+                          <svg x-show="odcrRequirementIcon(requirement.status) === 'passed'" class="drawer-icon"
+                            viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5" /></svg>
+                          <svg x-show="odcrRequirementIcon(requirement.status) === 'failed'" class="drawer-icon"
+                            viewBox="0 0 24 24" aria-hidden="true"><path d="m18 6-12 12M6 6l12 12" /></svg>
+                          <svg x-show="odcrRequirementIcon(requirement.status) === 'unknown'" class="drawer-icon"
+                            viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="M9.1 9a3 3 0 1 1 5.83 1c0 2-3 2-3 4M12 18h.01" /></svg>
+                          <span x-text="requirement.status"></span>
+                        </span>
+                      </div>
+                      <div class="requirement-detail" x-show="showOdcrRequirementReason(requirement)">
+                        <p x-text="requirement.reason"></p>
+                        <div><span class="muted">Observed: </span><span x-text="requirement.observedValue"></span></div>
+                        <div class="mono requirement-resource" x-show="requirement.resourceId" x-text="requirement.resourceId"></div>
+                      </div>
+                    </section>
+                  </template>
+                  <div class="requirement-group-empty" x-show="group.items.length === 0">No requirements in this group.</div>
+                </div>
+              </section>
+            </template>
+          </div>
+        </aside>
+      </div>
+    </template>
+  </div>
+</body>
+</html>

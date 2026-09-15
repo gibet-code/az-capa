@@ -1,0 +1,1 @@
+"""External Azure client tests."""

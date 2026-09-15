@@ -1,0 +1,1 @@
+"""Application-controlled persistence adapters."""

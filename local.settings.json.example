@@ -1,0 +1,71 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "AzureDurableFunctionStorage": "UseDevelopmentStorage=true",
+    "AzureWebJobsSecretStorageType": "files",
+    "// homepage": "Disable the built-in Functions landing page so the admin SPA serves at /.",
+    "AzureWebJobsDisableHomepage": "true",
+
+    "// scope": "Subscription IDs and management group IDs are mutually exclusive. Leave both empty to discover subscriptions visible to the current identity.",
+    "SCOPE_SUBSCRIPTION_IDS": "",
+    "SCOPE_MANAGEMENT_GROUP_IDS": "",
+    "SCOPE_LOCATIONS": "",
+    "// scope locations": "Comma-separated ARM location codes such as westeurope,eastus. Cost Management conversion is still pending.",
+
+    "// cost management": "Shared by any Cost Management consumer. method = per-sub | per-billing.",
+    "COST_MANAGEMENT_METHOD": "per-sub",
+    "// agreement": "ea | mca. EA needs 2 queries (ActualCost hours + AmortizedCost cost); MCA uses 1 (AmortizedCost gives correct hours AND cost).",
+    "COST_MANAGEMENT_AGREEMENT_TYPE": "ea",
+    "COST_MANAGEMENT_BILLING_ACCOUNT_ID": "<billing-account-id>",
+    "COST_MANAGEMENT_BILLING_PROFILE_ID": "",
+    "COST_MANAGEMENT_MAX_CONCURRENCY": "8",
+    "COST_MANAGEMENT_TIME_CHUNK_DAYS": "0",
+    "COST_FINALIZATION_LAG_DAYS": "2",
+
+    "// vm usage": "VM daily usage pipeline.",
+    "USAGE_HISTORICAL_DAYS": "30",
+    "VM_USAGE_TABLE_NAME": "VmDailyUsage",
+    "VM_USAGE_CHECKPOINT_TABLE_NAME": "VmUsageCheckpoints",
+
+    "// capacity reservation usage": "Unused capacity-reservation daily usage pipeline (shares USAGE_HISTORICAL_DAYS).",
+    "CR_USAGE_TABLE_NAME": "CrDailyUsage",
+    "CR_USAGE_CHECKPOINT_TABLE_NAME": "CrUsageCheckpoints",
+    "CR_USAGE_SUMMARY_TABLE_NAME": "CrUsageSummaries",
+
+    "// activity log": "Subscription-scoped Activity Log collection. SCOPE_LOCATIONS is intentionally ignored.",
+    "ACTIVITY_LOG_HISTORICAL_DAYS": "30",
+    "ACTIVITY_LOG_REFRESH_OVERLAP_HOURS": "24",
+    "ACTIVITY_LOG_INGESTION_LAG_MINUTES": "20",
+    "ACTIVITY_LOG_MAX_CONCURRENCY": "10",
+    "ACTIVITY_LOG_REPLAY_MAX_UNITS_PER_RUN": "200",
+    "ACTIVITY_LOG_PENDING_UNKNOWN_HOURS": "48",
+    "ACTIVITY_LOG_OPERATIONS_TABLE_NAME": "ActivityLogOperations",
+    "ACTIVITY_LOG_COLLECTION_STATE_TABLE_NAME": "ActivityLogCollectionState",
+    "ACTIVITY_LOG_SPILL_CONTAINER_NAME": "activity-log-spill"
+    ,
+    "// compute sku catalog": "Global unique VM SKU properties. Queries one in-scope subscription across all regions daily at 05:30 UTC.",
+    "COMPUTE_SKU_TABLE_NAME": "ComputeSkus",
+    "COMPUTE_SKU_CHECKPOINT_TABLE_NAME": "ComputeSkuCheckpoints"
+    ,
+    "// azure reference data": "Independent immutable Subscription and Location catalogues.",
+    "AZURE_REFERENCE_DATA_BLOB_CONTAINER": "azure-reference-data",
+    "AZURE_REFERENCE_DATA_L1_TTL_SECONDS": "60",
+    "SUBSCRIPTION_REFERENCE_MAX_STALE_MINUTES": "60",
+    "LOCATION_REFERENCE_MAX_STALE_HOURS": "48"
+    ,
+    "// business context refresh": "Proactive dynamic-field refresh and stale observability.",
+    "SUBSCRIPTION_CONTEXT_MAX_STALE_MINUTES": "20"
+    ,
+    "// data collection scheduler": "Single timer dispatches all pipelines on their configured cadence; history is pruned daily.",
+    "DATA_COLLECTION_DISPATCH_SCHEDULE": "0 */5 * * * *",
+    "DATA_COLLECTION_HISTORY_RETENTION_DAYS": "30",
+    "DATA_COLLECTION_MAX_DISPATCH_PER_TICK": "0",
+    "DATA_COLLECTION_MIN_FREQUENCY_SECONDS": "300",
+    "DATA_COLLECTION_MAX_FREQUENCY_SECONDS": "2592000",
+    "SCHEDULER_RUN_STATE_TABLE_NAME": "SchedulerRunState",
+    "SCHEDULER_RUN_HISTORY_TABLE_NAME": "SchedulerRunHistory",
+    "SCHEDULER_CONFIG_TABLE_NAME": "SchedulerConfig"
+  }
+}

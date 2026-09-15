@@ -1,0 +1,33 @@
+@baseUrl = http://localhost:7071
+#@baseUrl = https://<your-app>.azurewebsites.net
+
+# Function key — leave blank for local (the local host does not enforce keys).
+@code =
+
+# Durable task hub + connection (from host.json) — used by the status/purge calls.
+@taskHub = azcapacity
+@connection = AzureDurableFunctionStorage
+
+
+### Refresh — plan + reconcile the per-subscription zone-mapping dataset (starts the orchestrator)
+POST {{baseUrl}}/api/data-collection/zone_mapping/refresh?code={{code}}
+Content-Type: application/json
+
+{}
+
+
+### Status — dataset presence, stored subscriptions/regions, and in-progress operation
+GET {{baseUrl}}/api/data-collection/zone_mapping/status?code={{code}}
+
+
+### Flush — empty the zone-mapping data + state tables (forces a clean rebuild on next refresh)
+POST {{baseUrl}}/api/data-collection/zone_mapping/flush?code={{code}}
+Content-Type: application/json
+
+{}
+
+
+### Check orchestration status
+# Paste an instance id from the "id" field of a refresh/flush response.
+@instanceId = 00000000000000000000000000000000
+GET {{baseUrl}}/runtime/webhooks/durabletask/instances/{{instanceId}}?taskHub={{taskHub}}&connection={{connection}}&code={{code}}

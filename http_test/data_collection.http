@@ -1,0 +1,43 @@
+@baseUrl = http://localhost:7071
+#@baseUrl = https://<your-app>.azurewebsites.net
+
+# Function key — leave blank for local (the local host does not enforce keys).
+# For a deployed app, set it and it will be appended as ?code={{code}}.
+@code =
+
+
+### List — one cheap call summarising every pipeline (enabled, cadence, last run, next due)
+GET {{baseUrl}}/api/data-collection?code={{code}}
+
+
+### Detailed status — the §2.2 envelope (scheduling + normalized progress) wrapping the pipeline body under `detail`.
+GET {{baseUrl}}/api/data-collection/activity_log/status?code={{code}}
+
+
+### Run history — root-only rows, newest first; running rows enriched live. Page with limit + after (RowKey continuation).
+GET {{baseUrl}}/api/data-collection/activity_log/run-history?limit=50&code={{code}}
+
+
+### Edit config — change cadence/enablement without a restart (optimistic concurrency).
+### expectedRevision must match the row's current Revision (from the list above); 0/absent for a new row.
+PATCH {{baseUrl}}/api/data-collection/cr_usage/config?code={{code}}
+Content-Type: application/json
+
+{
+  "enabled": true,
+  "frequencySeconds": 86400,
+  "anchorSeconds": 23400,
+  "expectedRevision": 0
+}
+
+
+### Disable a pipeline (schedule stops; data is left untouched). Subscription Reference refuses with 409.
+PATCH {{baseUrl}}/api/data-collection/zone_mapping/config?code={{code}}
+Content-Type: application/json
+
+{
+  "enabled": false,
+  "frequencySeconds": 0,
+  "anchorSeconds": 0,
+  "expectedRevision": 0
+}

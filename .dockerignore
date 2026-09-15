@@ -1,0 +1,13 @@
+.git
+.gitignore
+.pytest_cache
+.python_packages
+.venv
+.vscode
+__pycache__
+**/__pycache__
+*.py[cod]
+artifacts
+local.settings*.json
+node_modules
+TestResults

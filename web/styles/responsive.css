@@ -1,0 +1,158 @@
+.warning {
+  background: rgba(210,153,34,0.1);
+  border: 1px solid rgba(210,153,34,0.4);
+  color: var(--warn);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.error {
+  background: rgba(248,81,73,0.1);
+  border: 1px solid rgba(248,81,73,0.4);
+  color: var(--err);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+/* ── Toasts ──────────────────────────────────────────────── */
+.toasts {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.toast.error { border-color: rgba(248,81,73,0.5); background: rgba(248,81,73,0.14); color: #ffc9c5; }
+.toast.warn { border-color: rgba(210,153,34,0.5); background: rgba(210,153,34,0.14); color: #f0d08a; }
+.toast.ok { border-color: rgba(63,185,80,0.5); background: rgba(63,185,80,0.14); color: #a6e6ad; }
+
+.toast-close {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.7;
+  padding: 0 2px;
+  margin-left: auto;
+}
+.toast-close:hover { opacity: 1; }
+
+
+.placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+  padding: 8px 0;
+}
+
+.empty { color: var(--text-dim); padding: 20px; text-align: center; }
+.mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--text-dim); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+.progress-row { display: flex; align-items: center; gap: 10px; }
+progress { width: 160px; height: 8px; accent-color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes skeleton-pulse { from { opacity: 0.35; } to { opacity: 0.9; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block, .coverage-report-loading .skeleton-line, .skeleton-checkbox { animation: none; opacity: 0.65; }
+}
+
+@media (max-width: 900px) {
+  .vm-table-footer {
+    flex-basis: 70px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: 34px 34px;
+    column-gap: 10px;
+    row-gap: 0;
+  }
+  .vm-footer-left { grid-column: 1; grid-row: 1; }
+  .vm-footer-right { grid-column: 2; grid-row: 1; }
+  .vm-pagination { grid-column: 1 / -1; grid-row: 2; }
+}
+
+@media (max-width: 1180px) {
+  .coverage-report {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 460px 220px 220px;
+    grid-template-areas: "required" "not-required" "marking";
+    height: auto;
+  }
+  .coverage-primary-tile { min-height: 0; }
+  .coverage-compact-report { grid-template-columns: minmax(0, 1fr); }
+  .coverage-compact-chart, .coverage-compact-visual { display: none; }
+}
+
+@media (max-width: 640px) {
+  .layout { grid-template-columns: 48px minmax(0, 1fr); }
+  .global-header { padding-left: 12px; }
+  .header-brand { font-size: 14px; }
+  .account-trigger-copy, .account-chevron { display: none; }
+  .account-trigger { width: 48px; padding: 0 9px; }
+  .sidebar { width: 48px; }
+  .sidebar:hover, .sidebar:focus-within { width: min(218px, calc(100vw - 24px)); }
+  .nav-icon { flex-basis: 46px; width: 46px; }
+  .main { padding: 18px 14px 14px; }
+  .coverage-report-controls { flex-wrap: wrap; align-items: flex-start; }
+  .coverage-clear { flex: 1 0 100%; }
+  .coverage-matrix-group-by { margin-left: auto; }
+  .vm-command-bar { flex-wrap: wrap; }
+  .odcr-usage-controls {
+    flex: 1 0 100%;
+    display: grid;
+    grid-template-columns: auto 116px;
+    justify-content: start;
+    margin-left: 0;
+  }
+  .odcr-usage-chart-stage { height: 260px; }
+  .odcr-usage-chart-header { gap: 8px; padding-right: 4px; padding-left: 4px; }
+  .odcr-chart-group-by { align-items: flex-end; flex-direction: column; gap: 3px; }
+  .odcr-chart-group-by select { max-width: 150px; }
+  .odcr-deleted-toggle { grid-column: 1 / -1; }
+  .vm-filter-search { flex-basis: 100%; width: 100%; }
+  .multi-select-menu { width: 100%; max-width: 100%; }
+  .coverage-report {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto 220px;
+    grid-template-areas: "required" "not-required" "marking";
+    height: auto;
+  }
+  .coverage-report-block-title { height: auto; min-height: 34px; align-items: flex-start; flex-direction: column; gap: 3px; padding-top: 7px; padding-bottom: 7px; }
+  .coverage-category-facets { width: 100%; flex-wrap: wrap; overflow: visible; }
+  .coverage-required-grid { height: auto; grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(4, 220px); grid-template-areas: "coverage" "details" "prerequisites" "issues"; }
+  .coverage-unassociation-tile { height: 220px; }
+  .coverage-primary-tile, .coverage-details-tile, .coverage-prerequisites-tile { border-right: 0; border-bottom: 1px solid var(--border); }
+  .coverage-primary-tile { min-height: 0; }
+  .reservation-report-content { grid-template-columns: 92px minmax(0, 1fr); gap: 8px; }
+  .reservation-pie { width: 86px; height: 86px; }
+  .reservation-pie::after { inset: 21px; }
+  .reservation-pie > span { font-size: 15px; }
+  .reservation-legend-row { grid-template-columns: 8px minmax(0, 1fr) 25px 30px; gap: 4px; font-size: 10px; }
+  .vm-page { height: auto; min-height: calc(100vh - 84px); }
+  .vm-page::after { display: none; }
+  .tabs { overflow-x: auto; }
+  .tabs button { flex: 0 0 auto; padding-right: 11px; padding-left: 11px; }
+  .business-context-command-bar { align-items: center; }
+  .business-context-card .table-wrap { overflow-x: auto; }
+}

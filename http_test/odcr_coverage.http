@@ -1,0 +1,83 @@
+@baseUrl = http://localhost:7071
+#@baseUrl = https://<your-app>.azurewebsites.net
+
+
+### All VMs visible to the connected user
+GET {{baseUrl}}/api/odcr/coverage
+
+
+### Multi-value filters: OR within one field, AND across fields
+GET {{baseUrl}}/api/odcr/coverage?subscriptionId=00000000-0000-0000-0000-000000000000&subscriptionId=11111111-1111-1111-1111-111111111111&location=westeurope&deploymentType=Regional&deploymentType=Zone%202&vmSize=Standard_D2s_v5&vmssFlexible=No
+
+
+### Friendly subscription names are display-only; send the subscription ID
+GET {{baseUrl}}/api/odcr/coverage?subscriptionId=00000000-0000-0000-0000-000000000000
+
+
+### An empty filter is unrestricted (same behavior as omitting it)
+GET {{baseUrl}}/api/odcr/coverage?resourceGroup=
+
+
+### Invalid finite filter value returns HTTP 400
+GET {{baseUrl}}/api/odcr/coverage?deploymentType=Zonal%201
+
+
+### Reservation lifecycle status filter
+GET {{baseUrl}}/api/odcr/coverage?reservationStatus=Allocated%2C%20within%20capacity
+
+
+### Mark one VM as requiring ODCR coverage
+PUT {{baseUrl}}/api/odcr/coverage/decisions
+Content-Type: application/json
+
+{
+	"resourceIds": [
+		"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Compute/virtualMachines/example-vm"
+	],
+	"decision": "required",
+	"priority": "high",
+	"note": "Business-critical workload"
+}
+
+
+### Mark one VM as not requiring ODCR coverage
+PUT {{baseUrl}}/api/odcr/coverage/decisions
+Content-Type: application/json
+
+{
+	"resourceIds": [
+		"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Compute/virtualMachines/example-vm"
+	],
+	"decision": "not_required",
+	"priority": null,
+	"note": "Covered by another continuity strategy"
+}
+
+
+### Clear a decision while retaining the latest-editor audit record
+PUT {{baseUrl}}/api/odcr/coverage/decisions
+Content-Type: application/json
+
+{
+	"resourceIds": [
+		"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Compute/virtualMachines/example-vm"
+	],
+	"decision": null,
+	"priority": null,
+	"note": null
+}
+
+
+### Apply the same decision to several VMs (maximum 500 resource IDs)
+PUT {{baseUrl}}/api/odcr/coverage/decisions
+Content-Type: application/json
+
+{
+	"resourceIds": [
+		"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Compute/virtualMachines/example-vm-1",
+		"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/example-rg/providers/Microsoft.Compute/virtualMachines/example-vm-2"
+	],
+	"decision": "required",
+	"priority": "medium",
+	"note": null
+}

@@ -1,0 +1,38 @@
+@baseUrl = http://localhost:7071
+#@baseUrl = https://<your-app>.azurewebsites.net
+
+# Function key — leave blank for local (the local host does not enforce keys).
+# For a deployed app, set it and it will be appended as ?code={{code}}.
+@code =
+
+# Durable task hub + connection (from host.json) — used by the status/purge calls.
+@taskHub = azcapacity
+@connection = AzureDurableFunctionStorage
+
+
+### Refresh — plan + reconcile the capacity-reservation daily usage dataset (starts the orchestrator)
+POST {{baseUrl}}/api/data-collection/cr_usage/refresh?code={{code}}
+Content-Type: application/json
+
+{}
+
+
+### Status — dataset freshness + whether a refresh can run against the current scope
+GET {{baseUrl}}/api/data-collection/cr_usage/status?code={{code}}
+
+
+### Flush — empty the usage data + state tables (forces a clean rebuild on next refresh)
+POST {{baseUrl}}/api/data-collection/cr_usage/flush?code={{code}}
+Content-Type: application/json
+
+{}
+
+
+### Check orchestration status
+# Paste an instance id from the "id" field of a refresh/flush response.
+@instanceId = 00000000000000000000000000000000
+GET {{baseUrl}}/runtime/webhooks/durabletask/instances/{{instanceId}}?taskHub={{taskHub}}&connection={{connection}}&code={{code}}
+
+
+### Purge orchestration history (older than the given timestamp)
+DELETE {{baseUrl}}/runtime/webhooks/durabletask/instances?createdTimeFrom=2026-01-01T00:00:00Z&taskHub={{taskHub}}&connection={{connection}}&code={{code}}
