@@ -4,6 +4,11 @@
 
 Current operational runbook. Last verified on 2026-09-15.
 
+Installing a published release does not require a local build. For a normal
+installation, follow [Install Azure Capacity in Azure](installation.md), download
+the ZIP from the private GitHub release in a browser, and use the deployment
+steps below. The build sections on this page are for release maintainers only.
+
 The local build runs the complete test suite in a Linux container, installs only
 runtime dependencies into the Azure Functions package layout, and exports a
 ready-to-run ZIP. Tests and development dependencies are not included in the
@@ -95,9 +100,42 @@ before creating the ZIP.
 
 ## Deploy
 
-Deploy the generated ZIP using Flex Consumption One Deploy with remote build
-disabled. Keep deployment separate from this build so the exact same tested
-artifact can be promoted through environments.
+Use the ZIP produced by the build or manually downloaded from the private GitHub
+release. Do not extract or modify it.
+
+### Azure portal (Cloud Shell)
+
+1. In the Azure portal, select the **Cloud Shell** button and choose PowerShell.
+2. In the Cloud Shell toolbar, select **Manage files** → **Upload**, then upload
+  the local `az-capacity-<version-or-commit>.zip` file.
+3. Run the command below, using the uploaded file's path:
+
+```powershell
+az functionapp deployment source config-zip `
+  --resource-group <resource-group> `
+  --name <function-app-name> `
+  --src $HOME/az-capacity-<version-or-commit>.zip `
+  --build-remote false
+```
+
+The Azure portal does not currently provide a documented Deployment Center
+button for uploading a local ZIP to a Flex Consumption app. Cloud Shell keeps
+the entire deployment workflow in the portal while using the supported One
+Deploy command. Wait for it to report success and do not browse to the app until
+Easy Auth has also been configured.
+
+### Azure CLI fallback
+
+```powershell
+az functionapp deployment source config-zip `
+  --resource-group <resource-group> `
+  --name <function-app-name> `
+  --src C:\Downloads\az-capacity-<version-or-commit>.zip `
+  --build-remote false
+```
+
+Wait for the command to succeed. Then restart the Function App from its
+**Overview** page and continue with the verification in the installation guide.
 
 The target Function subnet does not need access to PyPI or Oryx for this
 artifact. Application runtime and Functions extension bundle network

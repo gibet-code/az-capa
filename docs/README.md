@@ -51,6 +51,8 @@ proposed behavior; its status section is authoritative.
 
 ## Operations
 
+- [Install Azure Capacity in Azure](operations/installation.md) - complete
+  first-time installation procedure and team handoffs.
 - [Easy Auth setup](operations/easy-auth-setup.md) - Entra application and App Service
   Authentication configuration.
 - [Environment variables](operations/environment-variables.md) - settings,

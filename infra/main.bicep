@@ -4,9 +4,7 @@
 // storageConnectivity selects how the app reaches storage: Public, ServiceEndpoint
 // (VNet-injected app subnet allowed on storage) or PrivateEndpoint (storage public
 // access disabled, reached over private endpoints in the same VNet).
-// Code is deployed separately (Core Tools `func azure functionapp publish`).
-// Easy Auth: set configureEasyAuth=true + appRegistrationClientId to wire it up here,
-// or leave it off and run infra/auth.bicep afterwards — see docs/operations/easy-auth-setup.md.
+// Code and Easy Auth are deployed separately. See docs/operations/installation.md.
 
 targetScope = 'resourceGroup'
 
@@ -39,8 +37,6 @@ type deploymentOutputs = {
   @description('Managed identity principal ID — assign Azure Capacity Backend Reader on the target scope.')
   managedIdentityPrincipalId: string
   managedIdentityClientId: string
-  @description('True when Easy Auth was configured in this deployment.')
-  easyAuthConfigured: bool
   @description('Post-deployment instructions.')
   nextSteps: string
 }
@@ -84,15 +80,6 @@ param storageConnectivity string = 'Public'
 
 @description('Address space for the VNet created for ServiceEndpoint/PrivateEndpoint. Two /26 subnets are carved out (app + private endpoints).')
 param vnetAddressPrefix string = '10.100.0.0/24'
-
-@description('Set to true if an Entra app registration already exists for Easy Auth. When true, appRegistrationClientId is required and Easy Auth (authsettingsV2) is configured in this deployment. When false, deploy infra/auth.bicep after creating the app registration (docs/operations/easy-auth-setup.md).')
-param configureEasyAuth bool = false
-
-@description('Application (client) ID of the existing Entra app registration. Required when configureEasyAuth is true; ignored otherwise.')
-param appRegistrationClientId string = ''
-
-@description('Entra tenant ID for the Easy Auth OpenID issuer. Defaults to the deployment tenant.')
-param entraTenantId string = tenant().tenantId
 
 var useServiceEndpoint = storageConnectivity == 'ServiceEndpoint'
 var usePrivateEndpoint = storageConnectivity == 'PrivateEndpoint'
@@ -666,61 +653,10 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
   }
 }
 
-resource authSettings 'Microsoft.Web/sites/config@2024-04-01' = if (configureEasyAuth) {
-  parent: functionApp
-  name: 'authsettingsV2'
-  properties: {
-    platform: {
-      enabled: true
-      runtimeVersion: '~1'
-    }
-    globalValidation: {
-      requireAuthentication: true
-      unauthenticatedClientAction: 'RedirectToLoginPage'
-      redirectToProvider: 'azureactivedirectory'
-    }
-    identityProviders: {
-      azureActiveDirectory: {
-        enabled: true
-        registration: {
-          openIdIssuer: '${environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
-          clientId: appRegistrationClientId
-          // Option A: points at the MI-client-ID app setting, not a secret.
-          clientSecretSettingName: 'OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID'
-        }
-        login: {
-          loginParameters: [
-            'scope=openid profile offline_access ${environment().resourceManager}user_impersonation'
-          ]
-        }
-        validation: {
-          allowedAudiences: [
-            'api://${appRegistrationClientId}'
-          ]
-          defaultAuthorizationPolicy: {
-            allowedApplications: [
-              appRegistrationClientId
-            ]
-          }
-        }
-      }
-    }
-    login: {
-      tokenStore: {
-        enabled: true
-        tokenRefreshExtensionHours: 72
-      }
-    }
-  }
-}
-
 output result deploymentOutputs = {
   functionAppName: functionApp.name
   functionAppHostName: functionApp.properties.defaultHostName
   managedIdentityPrincipalId: managedIdentity.properties.principalId
   managedIdentityClientId: managedIdentity.properties.clientId
-  easyAuthConfigured: configureEasyAuth
-  nextSteps: configureEasyAuth
-    ? 'Easy Auth configured. Ensure the app registration has the MI federated credential + ID token issuance (docs/operations/easy-auth-setup.md Steps 1-4), then assign Azure Capacity Backend Reader on the target subs/MG.'
-    : 'Easy Auth NOT configured. Create the app registration (docs/operations/easy-auth-setup.md Steps 1-4) then deploy infra/auth.bicep. Also assign Azure Capacity Backend Reader on the target subs/MG.'
+  nextSteps: 'Assign Azure Capacity Backend Reader to the managed identity, then complete the separate Easy Auth and code deployment procedures in docs/operations/installation.md.'
 }

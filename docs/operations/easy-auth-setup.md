@@ -21,11 +21,16 @@ managed-identity federated credential option below is used.
 > Activity Log, Zone Mapping). Easy Auth only adds the **user** identity used by
 > the interactive `/api/*` read endpoints.
 
-Do this once per deployed instance. The app registration + federated credential
-and the `User` / `Admin` app roles are created manually in the portal; enabling
-App Service Authentication itself (the app setting + `authsettingsV2`) is done by
-the `infra/auth.bicep` template. App-role definitions and assignments are
-intentionally not provisioned by Bicep.
+Do this once per deployed instance, after the Azure infrastructure deployment.
+The Entra administrator creates the app registration, federated credential,
+`User` / `Admin` app roles, and assignments manually in the portal. After that
+handoff, the Azure infrastructure operator enables App Service Authentication
+with `infra/auth.bicep`. Entra resources, role definitions, and assignments are
+intentionally never provisioned by `infra/main.bicep`.
+
+For the complete installation order and role handoffs, start with
+[Install Azure Capacity in Azure](installation.md). This page is the detailed
+authentication subprocedure.
 
 See [Authorization](../specs/authorization.md) for the normative role, trust-boundary,
 endpoint-policy, and frontend-capability contract. This document is the
@@ -169,7 +174,18 @@ Add credential**:
 - **Audience:** leave the default **`api://AzureADTokenExchange`** — do not change it.
 - **Add**.
 
-## Step 6 — Enable App Service Authentication (authsettingsV2)
+## Step 6 — Hand the application ID to the Azure operator
+
+Give the Azure infrastructure operator the following non-secret values:
+
+- Application (client) ID
+- Entra tenant ID
+- Function App name and resource group, if the teams do not share that context
+
+The Azure operator performs the remainder of this step. No Entra administrative
+permissions are needed to deploy `infra/auth.bicep`.
+
+### Enable App Service Authentication (authsettingsV2)
 
 `infra/auth.bicep` applies `authsettingsV2` (Entra provider, token store, and the
 ARM login scope) to the deployed app. The MI-client-ID app setting it relies on,
