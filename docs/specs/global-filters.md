@@ -2,8 +2,8 @@
 
 ## Status
 
-Implemented baseline plus approved pending App Scope integration semantics as
-of 2026-08-30.
+Current implemented contract, including App Scope integration. Last verified on
+2026-09-15.
 
 Management Group is not an end-user Global Filter. It remains an
 administrator-owned application-scope mechanism.
@@ -70,7 +70,7 @@ criteria are retained; an open card's draft edits remain in Alpine component
 memory and are discarded by Cancel, dismissal, or page reload. Storage is
 partitioned by tenant and user in Azure and uses a dedicated local-development
 partition. It is not written to cookies, the URL, or the backend. See
-[Frontend Preference Store](frontend-preference-store.md).
+[Frontend Preference Store](frontend-preferences.md).
 
 Effective population:
 

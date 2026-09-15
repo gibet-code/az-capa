@@ -1,5 +1,10 @@
 # Environment variable audit
 
+## Status
+
+Current reference. Last verified against the Python settings, Azure Functions
+bindings, and Bicep configuration on 2026-09-15.
+
 This inventory covers first-party Python environment reads, Azure Functions binding
 expressions, and settings supplied to the deployed Function App by
 `infra/main.bicep`. It does not include environment variables read internally by

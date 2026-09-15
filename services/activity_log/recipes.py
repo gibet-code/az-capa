@@ -1,7 +1,7 @@
 """Static, code-defined Activity Log collection recipes.
 
 A recipe declares only *what* to collect and *what to keep* (Section 1 of
-``docs/activity-log-history-pipeline.md``). It carries no behavior and imports
+``docs/specs/activity-log-history.md``). It carries no behavior and imports
 nothing outside the standard library, so it stays a pure, cheaply-importable
 data table that the client (server-side filter derivation), projection, and
 pipeline all read.

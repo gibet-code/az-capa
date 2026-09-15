@@ -1,5 +1,9 @@
 # Backend architecture
 
+## Status
+
+Current architecture. Last verified against the repository on 2026-09-15.
+
 The Python backend uses four application layers plus the Azure Functions adapter.
 
 ```text

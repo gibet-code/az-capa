@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented current-state specification as of 2026-08-31.
+Current implemented contract. Last verified on 2026-08-31.
 
 The application uses Entra app roles enforced by the Azure Functions HTTP
 adapter. Easy Auth authenticates requests and supplies the trusted application
@@ -136,7 +136,7 @@ assigned and verified. Existing sessions must sign out and back in after role
 assignment changes.
 
 The complete provisioning and operational verification procedure is in
-[Easy Auth setup](easy-auth-setup.md).
+[Easy Auth setup](../operations/easy-auth-setup.md).
 
 ## Verification matrix
 

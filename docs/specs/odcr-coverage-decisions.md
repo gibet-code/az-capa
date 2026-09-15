@@ -1,5 +1,9 @@
 # ODCR coverage decisions
 
+## Status
+
+Current API and persistence contract.
+
 ODCR coverage decisions are shared manual planning inputs attached to VM resource IDs. They are independent from the automated ODCR eligibility and reservation lifecycle statuses.
 
 ## Values

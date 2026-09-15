@@ -1,5 +1,9 @@
 # Function Package Build and Deployment
 
+## Status
+
+Current operational runbook. Last verified on 2026-09-15.
+
 The local build runs the complete test suite in a Linux container, installs only
 runtime dependencies into the Azure Functions package layout, and exports a
 ready-to-run ZIP. Tests and development dependencies are not included in the

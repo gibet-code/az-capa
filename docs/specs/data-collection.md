@@ -2,19 +2,16 @@
 
 ## Status
 
-Implemented as of 2026-09-02. Replaces per-pipeline timer triggers and
+Current implemented architecture. Last verified on 2026-09-15. It replaces
+per-pipeline timer triggers and
 per-pipeline HTTP endpoints with a single scheduling dispatcher, a single
 data-collection facade, and app-owned run-state / run-history / config stores.
 No pipeline's collection logic (resolve/plan, paging, throttle handling, flush)
 changed; only how runs are *triggered*, *gated*, *recorded*, and *surfaced*.
 
-One design point changed during implementation. The spec assumed scope-dependent
-pipelines tolerate an absent Subscription snapshot on cold start via a retryable
-`app_scope_initializing` (HTTP 503) response, with dispatch ordering as a
-courtesy. In practice that left a real cold-start race (daily pipelines that
-failed on the first tick parked for 24h). It is resolved by an **opt-in live
-scope fallback** in `resolve_app_scope`, which makes collection pipelines
-independent of snapshot publish ordering. See **§11** and the updated §3/§9/§10.
+Scope-dependent collection pipelines use the opt-in live fallback in
+`resolve_app_scope` when the Subscription snapshot is absent. This makes their
+cold-start behavior independent of snapshot publication order; see §11.
 
 ## Purpose and Ownership
 
@@ -524,21 +521,9 @@ Fields: Enabled (bool), FrequencySeconds (int), AnchorSeconds (int),
 
 ---
 
-### 11. App Scope resolution on cold start (implemented deviation)
+### 11. App Scope resolution on cold start
 
-*Not in the original spec — added during implementation.*
-
-The spec assumed scope-dependent pipelines tolerate an absent Subscription
-snapshot through the retryable `app_scope_initializing` (HTTP 503) read contract,
-and relied on Subscription Reference's low `priority` to warm the snapshot first.
-Implementation exposed a real race: on a clean deploy the first tick dispatches
-Subscription Reference **and** the scope-dependent pipelines in the *same* tick
-(dispatch does not wait for the snapshot to publish). Their `resolve_plan` ran
-before the snapshot existed and raised `AppScopeInitializingError`; because
-dispatch stamps `LastDispatchedAt` before the outcome is known, the failed
-**daily** pipelines then parked for a full frequency interval (~24h).
-
-**Resolution — opt-in live scope fallback.** `resolve_app_scope` takes a
+`resolve_app_scope` takes a
 keyword-only `allow_live_fallback: bool = False`. When the published snapshot is
 absent *and* the caller opts in *and* a backend identity is available, it
 resolves the boundary from a **live** `get_subscription_inventory` query
@@ -561,14 +546,13 @@ the diagnostic path; it uses a function-local import to avoid the
   cold-start window. The snapshot itself is unchanged and still powers UI
   dropdowns, row enrichment, and diagnostics.
 
-Validated live on a clean-slate deploy: on the single cold-start tick,
-Subscription Reference, Location Reference, Compute SKU, and CR usage all
-resolved scope and completed with **zero** `AppScopeInitializingError`; Activity
-Log resolved live and collected across all in-scope subscriptions.
+This behavior prevents a daily pipeline from failing on the initial dispatcher
+tick and waiting until its next daily slot solely because Subscription Reference
+had not published yet.
 
 ---
 
-## Impact on existing code
+## Implementation summary
 
 - **Removed:** per-pipeline timer triggers; per-pipeline `refresh`/`flush`/
   `status` HTTP routes; `query_instances` and the running-scan path in
@@ -582,7 +566,7 @@ Log resolved live and collected across all in-scope subscriptions.
   on `resolve_app_scope` plus its opt-in at the five backend collection
   resolvers and the shared `_live_subscription_values` helper (§11).
 - **Unchanged:** every pipeline's resolve/plan, paging, throttle handling, flush,
-  checkpoint state, and existing `status()` computation (wrapped by an adapter).
+  checkpoint state, and existing `status()` computation.
 - **Frontend:** `web/app.js` swaps its per-pipeline URLs for
   `/api/data-collection/${kind}/${action}` through the existing
   `collectionSections`/`statuses` registry — a contained change that also
@@ -590,49 +574,7 @@ Log resolved live and collected across all in-scope subscriptions.
 
 ---
 
-## Phasing
-
-Because the app is not yet running anywhere, cutover is a **clean slate**: before
-phase 1, flush all app state and purge the Durable task hub / history. There are
-no in-flight orchestrations to reconcile and no legacy rows to migrate, so the
-dispatcher starts against empty stores (every pipeline due on the first tick) and
-no backfill or double-run window exists.
-
-1. **Registry + dispatcher + facade + run state**, cadence still from registry
-   defaults (behavior-preserving): collapses timers into one, adds point-read
-   gating. Remove per-pipeline timers/routes **and repoint `web/app.js` to the
-   facade in the same change** so the SPA is never left calling deleted routes;
-   update `http_test` and tests.
-2. **Gate + notifications on run state / RunHistory**, delete `query_instances`.
-3. **Contention-group serialization + per-tick dispatch cap** hardening for the
-   cold-start burst (random jitter was dropped as unnecessary).
-4. **Editable SchedulerConfig + Settings card**, and a `GET /api/data-collection/`
-   -backed table UI replacing the per-section status calls.
-
----
-
-## Open Decisions
-
-All four original decisions are resolved; recorded here for traceability.
-
-1. **Editable cadence store (§8).** RESOLVED — accepted. Cadence and enablement
-   are runtime configurable via `SchedulerConfig`; the App Scope environment-only
-   stance is scoped to scope/data semantics only.
-2. **Flush vs. cadence (§5).** RESOLVED — flush is a single action that empties
-   data whenever the scope is idle and leaves the schedule running; the next due
-   slot repopulates. To keep data empty, an admin disables the pipeline via
-   `PATCH config` first. No `disableAfter` flag and no forced disable dance.
-3. **Terminal-write mechanism (§7).** RESOLVED — a shared `record_run_outcome`
-   completion activity called by every orchestrator, backstopped by the
-   dispatcher reconciler that closes crashed/terminated runs from the Durable
-   status.
-4. **RunHistory retention (§7).** RESOLVED — time-based, default 30 days
-   (`DATA_COLLECTION_HISTORY_RETENTION_DAYS`), pruned by the dispatcher tick
-   (throttled to once/day); no separate retention timer.
-
----
-
-## Required Verification
+## Verification Contract
 
 1. Exactly one timer trigger exists in the app (the dispatcher); no
    per-pipeline timers remain.
@@ -666,7 +608,8 @@ All four original decisions are resolved; recorded here for traceability.
     newest-first; running rows are enriched with live `runtimeStatus` and
     normalized `progress`.
 15. A pipeline's Durable custom status is normalized to `{complete, label}` by
-    its adapter and surfaced in detailed status, the list, and run-history;
+    its own progress normalizer and surfaced in detailed status, the list, and
+    run-history;
     running-but-indeterminate yields `progress = null`.
 16. `flush` is allowed when the scope is idle, empties data, and leaves the
     schedule running (no `disableAfter`); keeping data empty requires a separate
@@ -690,91 +633,7 @@ All four original decisions are resolved; recorded here for traceability.
     `AppScopeInitializingError`; when the snapshot is already published the live
     query is not issued; `diagnose_app_scope` stays strict (snapshot-only). (§11)
 
----
-
-## Second-pass review — resolutions
-
-The first-pass gaps are resolved below (decisions of 2026-09-02). One remains an
-implementation task rather than an open question.
-
-### G1. `start()` is not atomic — RESOLVED (design task)
-
-The claim sequence is *gate check → `start_new` → write `ActiveInstanceId`*. Two
-callers (the dispatcher tick and an admin manual, or two workers) can both pass
-the idle check before either writes, then both `start_new` the same scope — a
-double run the gate was meant to prevent.
-
-**Resolution:** claim first, start second. Conditionally write `ActiveInstanceId`
-to `SchedulerRunState` using an **ETag / insert-if-null** guard *before*
-`start_new`; only the winner proceeds to `start_new` and then fills the real
-instance id. A loser returns Busy (409) or skips. On `start_new` failure the
-winner releases the claim (a transient orphaned claim is self-healed by the
-reconciler). This guarantees single-start. Carried into planning as the first
-implementation task.
-
-### G2. Multi-worker `run_on_startup` — RESOLVED (accept per-worker)
-
-`run_on_startup` fires on each worker at cold start, so each worker runs a tick.
-We **accept** that rather than adding a cross-worker lock: the G1 claim guard
-ensures only one worker actually dispatches any given due pipeline (the others get
-Busy), and the reconciler and prune use conditional writes, so concurrent workers
-are idempotent without extra locking. No added complexity. (The
-`startOnEveryStartup` flag and per-process startup detection were dropped
-entirely — cold-start warm now falls out of empty-state due-now dispatch.)
-
-### G3. First-deploy / empty-RunState — RESOLVED (in-code defaults + serialization)
-
-An absent `LastDispatchedAt` is treated as due, but the burst is harmless: the
-contention-group serialization already lets only one Cost Management pipeline
-start per tick, and catalogues hit independent, throttle-tolerant APIs. No
-migration-time seeding from dataset state is needed. If extra smoothing is ever
-wanted, the registry can carry an in-code `initialStaggerSeconds` default per
-pipeline; not required for correctness.
-
-### G4. Infrastructural pipeline cannot be disabled — RESOLVED
-
-Subscription Reference is marked `canDisable = false` (§1). The list response
-returns the flag so the UI greys out its enable/disable control, and
-`PATCH config` refuses to disable it (HTTP 409). It always runs; no
-`startOnEveryStartup`-vs-`enabled` conflict remains.
-
-### G5. Progress coverage is uneven — RESOLVED (no retrofit)
-
-Accepted as-is. A pipeline without a custom status renders **“In Progress”**; one
-with a custom status renders **“In Progress (xx%)”** with the label on hover
-(§2.4). Usage/catalogue pipelines are **not** retrofitted with a custom status.
-
-### G6. Reconciler double-close — RESOLVED (idempotent, activity wins)
-
-Two things can close a run's RunHistory row: the orchestrator's
-`record_run_outcome` activity (the normal path, which knows the rich outcome such
-as `partial`) and the dispatcher reconciler (the crash backstop, which only sees
-Durable's coarse `runtimeStatus`). The rule that avoids conflict: the reconciler
-**only acts when the row is still `running`** and **never overwrites an
-already-terminal row** — so the rich activity outcome always wins when it ran.
-When the reconciler does close a crashed run, it records `failed` (or reads the
-orchestration `output` if present). That is all this gap meant: prefer the
-activity's outcome, make the backstop a no-op once the row is closed.
-
-### G7. Flush UX — RESOLVED (single action)
-
-Flush is one action: it empties data whenever the scope is idle and leaves the
-schedule running, so the next due slot repopulates. The old disable→flush→re-enable
-dance is gone. To keep data empty for teardown, an admin disables the pipeline via
-`PATCH config` first — no `disableAfter` variant is kept, for simplicity.
-
-### G8. Cadence granularity shift — RESOLVED (acceptable)
-
-Daily jobs firing within 5 minutes of due (instead of an exact minute) is
-acceptable; staggering moves from fixed clock offsets to contention-group
-serialization. Nothing downstream depends on the exact wall-clock minute.
-
-### G9. Notifications label source — CONFIRMED non-issue
-
-Double-checked: `web_bp._TASK_LABELS` is used **only** by the notifications
-endpoints — `_build_item` (label), the instance filter (`status.name in
-_TASK_LABELS`), and the purge guard — all of which this design replaces with
-RunHistory reads. `_build_item` already surfaces `custom_status` as `progress`.
-No other consumer references it, and sub-orchestrator rows are already excluded
-today. So it is a mechanical delete when notifications is repointed at RunHistory
-(labels come from the registry `label` + action), not a design decision.
+This contract is maintained alongside the dispatcher, facade, storage, and
+integration tests.
+Backend dependency and ownership rules are defined in
+[Backend architecture](../architecture/backend.md).

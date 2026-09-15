@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented current-state specification as of 2026-08-28.
+Current implemented contract. Last verified on 2026-08-28.
 
 Normal reads are snapshot-only. Dynamic mappings refresh proactively through
 Durable Functions.

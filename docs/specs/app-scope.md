@@ -2,12 +2,11 @@
 
 ## Status
 
-Proposed behavior for review as of 2026-08-30. A startup-warmed Subscription
-snapshot with a retryable initializing response, cross-worker last-writer-wins
-publication, relaxed handling of backend identity changes, continued use of
-stale generations, removal of Subscription and Location flush operations, strict
-scope-only Business Context output, and environment-only App Scope configuration
-are approved.
+Current implemented architecture. Last verified against the repository on
+2026-09-15. Subscription and Location Reference Data are refresh-only, App Scope
+configuration is environment-owned, interactive reads use the published
+Subscription snapshot, and collection pipelines may use a read-only live
+fallback while that snapshot is absent.
 
 An empty effective App Scope is now treated as a fatal configuration error, not
 a valid fail-closed value: enforcement resolution raises and every data-serving
@@ -15,7 +14,7 @@ path returns a clear, admin-facing message. This is distinct from a non-empty
 scope that legitimately yields zero rows (for example, a user-token report whose
 signed-in caller can access none of the in-scope resources), which remains a
 normal `200` result. The remaining presentation and error-shape decisions are
-now resolved; see [Decisions Before Implementation](#decisions-before-implementation).
+captured in [Design Decisions](#design-decisions).
 
 Azure Reference Data owns catalogue collection, snapshot persistence,
 publication, freshness reporting, schedules, and presentation fallbacks. Those
@@ -142,9 +141,9 @@ result:
 
 - Enforcement — `resolve_app_scope(identity)` returns a non-empty
   `ResolvedAppScope` or raises `AppScopeEmptyError`. Every security boundary
-  (report reads, mutations, collection pipelines) uses this path against the
-  cached published generation for stable, low-cost resolution. All and
-  Management Group modes read the cached Subscription snapshot;
+  uses this path. Interactive reads and mutations use the cached published
+  generation for stable, low-cost resolution. All and Management Group modes
+  read the cached Subscription snapshot;
   Selected-subscription mode uses the configured IDs directly, reads no
   snapshot, and never raises.
 - Diagnostics — `diagnose_app_scope(identity, live=False)` never raises for an
@@ -173,6 +172,13 @@ display through `diagnose_app_scope(identity, live=False)` purely to show the
 configured scope and whether it is currently empty, with no live Azure call. The
 getter contract lives in [Azure Reference Data](azure-reference-data.md).
 
+Backend collection pipelines call
+`resolve_app_scope(identity, allow_live_fallback=True)`. If no Subscription
+snapshot has been published, this option queries the live backend inventory and
+resolves the boundary without publishing or mutating Reference Data. Once a
+snapshot exists it always wins and no live query is made. Interactive callers
+do not enable this fallback.
+
 Diagnostics still propagates genuine infrastructure failures (storage read
 failure, invalid snapshot) as errors; only an empty effective result is
 non-fatal for diagnostics.
@@ -199,22 +205,12 @@ the retryable initializing response. Neither triggers an inline refresh, and a
 Management Group with no matches does not either.
 
 The snapshot is populated by the Subscription Reference Data pipeline, not by a
-read. That pipeline is the Subscription **Reference Data** blueprint
-(`functions/subscription_reference_bp.py`), which owns the `SUBSCRIPTIONS`
-snapshot through `subscription_pipeline.refresh` — not the Business Context
-blueprint (`subscription_context_bp.py`), which publishes an unrelated dataset.
-That pipeline warms the snapshot proactively at worker startup, in
-addition to its normal schedule (schedules are owned by
-[Azure Reference Data](azure-reference-data.md)). The startup warm is a distinct
-startup-triggered invocation — for example a warm timer registered with
-`run_on_startup=True`, or an equivalent app-startup hook — because the existing
-scheduled Subscription refresh timer runs with `run_on_startup=False` and
-therefore does not fire on a cold boot. No existing timer in the app uses
-`run_on_startup=True`, so the warm trigger is a net-new mechanism to add and
-exercise. Under steady state, reads find a
-published snapshot; the only window in which a read returns the initializing
-response is the short interval between worker start and the first successful
-warm. Duplicate startup warming across workers is accepted as last-writer-wins.
+read. The centralized Data Collection dispatcher runs on startup and treats a
+pipeline with no run state as due, so Subscription Reference is dispatched at
+the beginning of the cold-start cycle and then follows its configured cadence.
+It has the highest dispatch priority and cannot be disabled. Other collection
+pipelines do not depend on that publication completing first because they opt
+into the live fallback described above.
 
 The retryable `app_scope_initializing` (HTTP 503) needs no dedicated client
 handling: the existing generic error path is an acceptable presentation for the
@@ -230,35 +226,18 @@ see [Deferred / Future Considerations](#deferred--future-considerations).
 
 ## Pipeline Layering
 
-App Scope resolution (All and Management Group modes) reads the published
-Subscription snapshot; when it is absent, resolution returns the retryable
-initializing response rather than triggering a refresh. The Subscription
-pipeline owns populating the snapshot (startup warm and schedule), and the
-Location Reference Data refresh resolves App Scope to select a source
-subscription. These dependencies must not form a cycle
-in the `services` layer; the [Backend architecture](backend-architecture.md)
-dependency direction is enforced by splitting the Subscription and Location
-pipelines into separate modules ordered by dependency:
+`services.app_scope` reads published snapshots from
+`storage.reference_data_store` and queries live subscription inventory through
+`clients.resource_graph` only for diagnostics or an explicitly enabled
+collection fallback. Subscription and Location catalogue behavior lives in
+`services.reference_data`; the Location pipeline calls App Scope to select a
+source subscription.
 
-- A base Subscription pipeline module (for example
-  `services/subscription_reference.py`) owns `SubscriptionReferencePipeline`. It
-  depends only on `clients`, `storage`, and `core`, and never imports App Scope.
-- `services/app_scope.py` reads the published snapshot directly from
-  `storage.reference_data_store` and imports no `services` pipeline: because a
-  read never initializes inline, it needs neither the Subscription pipeline nor
-  the Location pipeline.
-- A higher Location pipeline module owns `LocationReferencePipeline`, which
-  imports `services.app_scope` to select its source subscription.
-
-The resulting imports are one-way — `subscription_reference` → (`clients`,
-`storage`, `core`); `app_scope` → (`storage`, `clients`, `core`); `location`
-pipeline → `app_scope` — with no cycle and no function-local cycle-breaking
-imports. Because `app_scope` imports no pipeline, the initialization
-import-cycle pressure is removed entirely; the module split is retained for a
-clear dependency layering and to let the Subscription pipeline own the startup
-warm. `storage.reference_data_store` continues to import no `services` module.
-The module split is covered by `tests/integration/test_function_discovery.py`,
-which protects blueprint and orchestrator registration across the move.
+To avoid a module cycle, normalization for a live subscription inventory is
+imported from `services.reference_data` inside the fallback helper rather than
+at module import time. Storage remains independent of services, and Durable
+function discovery is covered by `tests/integration/test_function_discovery.py`,
+consistent with [Backend architecture](../architecture/backend.md).
 
 ## Location Reference Data
 
@@ -352,10 +331,6 @@ The removed App Scope Table cache comprises `storage/app_scope_cache.py`
 the `app_scope_cache_table_name` and `app_scope_cache_ttl_seconds` settings, and
 the `APP_SCOPE_CACHE_TABLE_NAME` / `APP_SCOPE_CACHE_TTL_SECONDS` environment
 variables. The `AppScopeCache` Azure Table itself is no longer created or read.
-The existing tests that exercise the removed code must be deleted or rewritten in
-the same change: `AppScopeCacheTests` in `tests/core/test_app_scope.py`, and the
-`_identity_fingerprint` import and cases in `tests/services/test_app_scope.py`.
-Otherwise the suite fails to import once the modules are gone.
 
 ## Empty Scope Handling
 
@@ -589,15 +564,14 @@ App Scope flush operation. Restarting the Function App loads changed `SCOPE_*`
 environment values. Refreshing Subscription Reference Data re-evaluates the
 resolved subscription count for Management Group and All subscription scope.
 
-The proposed administrative lifecycle for both Subscription and Location
-Reference Data is refresh-only. Refresh publishes a complete replacement
+The administrative lifecycle for both Subscription and Location Reference Data
+is refresh-only. Refresh publishes a complete replacement
 generation through the existing manifest protocol. Deleting a healthy current
 generation is not required to obtain fresh source data and creates avoidable
 missing-data races.
 
-Accordingly, the pending implementation should remove the Subscription and
-Location Reference Data flush routes, orchestrators, UI actions, and tests.
-This approved target lifecycle is also specified in
+Subscription and Location Reference Data therefore expose no flush route,
+orchestrator, or UI action. This lifecycle is also specified in
 [Azure Reference Data](azure-reference-data.md).
 
 ## Failure Semantics
@@ -605,7 +579,8 @@ This approved target lifecycle is also specified in
 | Condition | Behavior |
 | --- | --- |
 | Explicit subscription configuration | Return configured IDs directly |
-| Subscription snapshot absent | Return a retryable `app_scope_initializing` (HTTP 503); the startup warm and scheduled refresh populate it, with no inline refresh and no blocking |
+| Subscription snapshot absent on an interactive read | Return a retryable `app_scope_initializing` (HTTP 503), with no inline refresh and no blocking |
+| Subscription snapshot absent during an opted-in collection operation | Resolve from a live backend inventory without publishing it |
 | Subscription snapshot stale | Return it without source refresh |
 | Subscription snapshot open with empty values | Snapshot returned without source refresh; if this yields an empty effective scope, resolution raises `AppScopeEmptyError` |
 | All mode resolves to zero subscriptions | Raise `AppScopeEmptyError` without source refresh |
@@ -635,8 +610,7 @@ This approved target lifecycle is also specified in
 
 ## Deferred / Future Considerations
 
-These enhancements are intentionally out of scope for the initial
-implementation. Add one only when a concrete requirement justifies it.
+Add these enhancements only when a concrete requirement justifies them.
 
 - **Synchronous first-read Subscription initialization.** If a requirement
   emerges that the first read after a cold boot must return data rather than a
@@ -647,7 +621,7 @@ implementation. Add one only when a concrete requirement justifies it.
   release; a request timeout on the in-thread Resource Graph inventory; and a
   bounded waiter timeout that falls back to the retryable 503 instead of
   blocking. It buys only the first post-cold-boot read, so it is not worth its
-  complexity unless the startup warm proves insufficient in practice.
+  complexity unless dispatcher warming proves insufficient in practice.
 - **Identity-bound snapshot validation.** Validating that a snapshot was
   published by the current backend identity is deferred as a future Azure
   Reference Data improvement (see [Security Properties](#security-properties)).
@@ -657,10 +631,10 @@ implementation. Add one only when a concrete requirement justifies it.
   collected-volume optimization tracked in the backlog; it must never change what
   a report exposes (see [Location Scope Enforcement](#location-scope-enforcement)).
 
-## Decisions Before Implementation
+## Design Decisions
 
-Empty effective scope now fails closed as `AppScopeEmptyError` rather than a
-successful no-work outcome. These previously open points are now resolved:
+Empty effective scope fails closed as `AppScopeEmptyError` rather than a
+successful no-work outcome. The governing decisions are:
 
 1. **HTTP status for empty scope on data-serving endpoints.** `409 Conflict`
    carrying `{ "error": "app_scope_empty", "message": ... }`. Mutations reject
@@ -679,52 +653,18 @@ successful no-work outcome. These previously open points are now resolved:
    fails with the empty-scope message and preserves prior data for Cost
    Management, Activity Log, Zone Mapping, Compute SKU, and Location refresh; no
    silent no-op.
-5. **Cold-start Subscription initialization.** Reads never initialize the
-   snapshot inline. On an absent snapshot the getter returns a retryable
-   `app_scope_initializing` (HTTP 503); the Subscription Reference Data
-   blueprint (`functions/subscription_reference_bp.py`) populates the
-   snapshot through a startup warm (a `run_on_startup=True` warm timer or an
-   equivalent app-startup hook) plus its normal schedule. This removes the
-   initialization lock, the in-request Resource Graph inventory, and the
-   bounded-wait machinery. Cross-worker duplicate warming is accepted as
-   last-writer-wins. A synchronous first-read initialization path is deferred
-   unless a requirement emerges that the first post-cold-boot read must return
-   data rather than a retryable 503; see
-   [Deferred / Future Considerations](#deferred--future-considerations).
+5. **Cold-start Subscription initialization.** Interactive reads never
+  initialize the snapshot inline and return `app_scope_initializing` (HTTP 503)
+  while it is absent. The centralized dispatcher starts Subscription Reference
+  as a due pipeline during its startup tick. Collection pipelines may use the
+  read-only live fallback so their first scheduled run does not depend on
+  publication order.
 6. **Client handling of the initializing response.** No dedicated frontend
    handling is added for the retryable `app_scope_initializing` (HTTP 503). The
    existing generic error path is accepted for the brief cold-start window; the
    App Scope Settings tab is unaffected because it resolves through diagnostics.
 
-## Implementation Sequencing
-
-Several changes are coupled and can silently under-collect or break the test
-suite if merged in the wrong order. The recommended slice order is:
-
-1. **Location read enforcement + collection-filter removal, together.** Add
-   read-time location enforcement to the location-bearing datasets and remove the
-   meter-region collection filter from VM/CR usage in the same change, and keep
-   `SCOPE_LOCATIONS` empty until both have landed. Splitting these fails open
-   (filter removed but not yet read-enforced) or under-collects (filter kept),
-   per the transitional caveat in
-   [Location Scope Enforcement](#location-scope-enforcement).
-2. **`usage_refresh` structural-scope change.** Drop `locations` from
-   `_describe_scope`, the persisted scope state, and the `REFUSE_STRUCTURAL`
-   set, so a `SCOPE_LOCATIONS` change is no longer treated as structural.
-3. **Gap-F dead-code and test removal.** Remove the App Scope Table cache and
-   its settings/env vars, and delete or rewrite `AppScopeCacheTests`
-   (`tests/core/test_app_scope.py`) and the `_identity_fingerprint` cases
-   (`tests/services/test_app_scope.py`) in the same change.
-4. **Startup warm + retryable 503.** Add the `run_on_startup=True` warm to the
-   Subscription Reference Data blueprint and switch reads to the
-   `app_scope_initializing` (HTTP 503) response on an absent snapshot.
-5. **Refresh-only lifecycle.** Remove the Subscription and Location Reference
-   Data flush routes, orchestrators, UI actions, and tests.
-
-No dedicated frontend change is required: the retryable 503 uses the existing
-generic error path.
-
-## Required Verification
+## Verification Contract
 
 Tests must prove:
 
@@ -740,12 +680,12 @@ Tests must prove:
 4. No Management Group match raises `AppScopeEmptyError` without a source
     refresh; diagnostics reports the per-Management-Group zero count.
 5. An absent Subscription manifest triggers no inline refresh; the snapshot is
-    populated only by the Subscription pipeline's startup warm and schedule.
+    populated by the Subscription pipeline through the centralized dispatcher.
 6. Stale snapshots do not trigger refresh; a published-empty snapshot does not
     trigger refresh and an empty effective scope raises `AppScopeEmptyError`.
 7. App Scope and reports never initialize Location Reference Data.
 8. Storage failures and invalid snapshots do not trigger initialization.
-9. An absent snapshot makes reads return a retryable `app_scope_initializing`
+9. An absent snapshot makes interactive reads return a retryable `app_scope_initializing`
     (HTTP 503) without running a Resource Graph inventory on the request thread,
     without taking an initialization lock, and without blocking; resolution
     never triggers an inline refresh.
@@ -801,17 +741,14 @@ Tests must prove:
 25. The App Scope Settings tab presents Subscription scope and Location scope as
   separate sections; the Location section shows configured locations or All
   locations with no per-value resolution.
-26. App Scope resolution reads the Subscription snapshot with no circular
-  import: the base Subscription pipeline module imports no App Scope,
-  `services/app_scope.py` reads the snapshot from `storage.reference_data_store`
-  and imports no `services` pipeline, and the Location pipeline imports
-  `services.app_scope`; module discovery and blueprint/orchestrator registration
-  remain intact after the split.
-27. Startup warming publishes the Subscription snapshot shortly after worker
-  boot so steady-state reads find a published snapshot; a read returns the
-  retryable initializing response only during the cold window before the first
-  successful warm, and duplicate startup warms across workers resolve as
-  last-writer-wins.
+26. App Scope resolution reads the Subscription snapshot without a static
+  `services.app_scope` ↔ `services.reference_data` import cycle; the live
+  normalization import remains local to the fallback helper, and function
+  discovery registers every blueprint and orchestrator.
+27. The dispatcher's startup tick treats Subscription Reference as due and
+  publishes the snapshot shortly after worker boot. Interactive reads return
+  the retryable initializing response during that cold window, while opted-in
+  collection pipelines resolve against the live inventory without publishing.
 28. Enforcement keeps no App Scope-owned resolved-result cache: All and
   Management Group resolution read the store-cached Subscription snapshot (the
   store's L1 TTL and ETag revalidation are the only hot-path cache) and recompute

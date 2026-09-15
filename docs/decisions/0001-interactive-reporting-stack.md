@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted for implementation planning.
+Accepted and implemented.
 
 ## Context
 
@@ -46,7 +46,7 @@ application-owned state and domain layer:
   concrete need for virtualization or substantially more table mechanics.
 
 The implementation contract is defined in
-[Frontend reporting architecture](../frontend-reporting-architecture.md).
+[Frontend reporting architecture](../architecture/frontend-reporting.md).
 
 ## Consequences
 

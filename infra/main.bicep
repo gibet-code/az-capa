@@ -6,7 +6,7 @@
 // access disabled, reached over private endpoints in the same VNet).
 // Code is deployed separately (Core Tools `func azure functionapp publish`).
 // Easy Auth: set configureEasyAuth=true + appRegistrationClientId to wire it up here,
-// or leave it off and run infra/auth.bicep afterwards — see docs/easy-auth-setup.md.
+// or leave it off and run infra/auth.bicep afterwards — see docs/operations/easy-auth-setup.md.
 
 targetScope = 'resourceGroup'
 
@@ -85,7 +85,7 @@ param storageConnectivity string = 'Public'
 @description('Address space for the VNet created for ServiceEndpoint/PrivateEndpoint. Two /26 subnets are carved out (app + private endpoints).')
 param vnetAddressPrefix string = '10.100.0.0/24'
 
-@description('Set to true if an Entra app registration already exists for Easy Auth. When true, appRegistrationClientId is required and Easy Auth (authsettingsV2) is configured in this deployment. When false, deploy infra/auth.bicep after creating the app registration (docs/easy-auth-setup.md).')
+@description('Set to true if an Entra app registration already exists for Easy Auth. When true, appRegistrationClientId is required and Easy Auth (authsettingsV2) is configured in this deployment. When false, deploy infra/auth.bicep after creating the app registration (docs/operations/easy-auth-setup.md).')
 param configureEasyAuth bool = false
 
 @description('Application (client) ID of the existing Entra app registration. Required when configureEasyAuth is true; ignored otherwise.')
@@ -721,6 +721,6 @@ output result deploymentOutputs = {
   managedIdentityClientId: managedIdentity.properties.clientId
   easyAuthConfigured: configureEasyAuth
   nextSteps: configureEasyAuth
-    ? 'Easy Auth configured. Ensure the app registration has the MI federated credential + ID token issuance (docs/easy-auth-setup.md Steps 1-4), then assign Azure Capacity Backend Reader on the target subs/MG.'
-    : 'Easy Auth NOT configured. Create the app registration (docs/easy-auth-setup.md Steps 1-4) then deploy infra/auth.bicep. Also assign Azure Capacity Backend Reader on the target subs/MG.'
+    ? 'Easy Auth configured. Ensure the app registration has the MI federated credential + ID token issuance (docs/operations/easy-auth-setup.md Steps 1-4), then assign Azure Capacity Backend Reader on the target subs/MG.'
+    : 'Easy Auth NOT configured. Create the app registration (docs/operations/easy-auth-setup.md Steps 1-4) then deploy infra/auth.bicep. Also assign Azure Capacity Backend Reader on the target subs/MG.'
 }

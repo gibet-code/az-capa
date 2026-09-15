@@ -2,8 +2,10 @@
 
 ## Status
 
-Implemented as of 2026-09-08. This document describes the pipeline as built
-through Activity Log source collection and inline operation assembly.
+Current implemented specification for Activity Log source collection and inline
+operation assembly. Domain histories and reporting projections are planned
+separately in
+[Activity Log Materializers](../planning/activity-log-materializers.md).
 
 The pipeline collects Activity Log source events and assembles them into
 operations inline. Each collected event is retained durably and replayable from
@@ -667,137 +669,14 @@ re-collection within the source window.
 
 ---
 
-## Deferred End Stores
+## Deferred Materializers
 
-The following stores are required by the product direction but are outside this
-design's implementation scope. Their physical partitioning, APIs, materializer
-orchestration, serving projections, and retention policies will be designed
-later. The cross-process `activity-log-operation-ready` notification and the
-Seam B asynchronous boundary (Section 7) are introduced together with the first
-materializer below, not before; until then materializers can poll
-`ActivityLogOperations` by its `PublishedVersion` watermark.
+Subscription, VM, VMSS, Capacity Reservation, and allocation-history
+materializers are outside this specification. Their product requirements,
+validation needs, and open design decisions are tracked in
+[Activity Log Materializers](../planning/activity-log-materializers.md).
 
-### Subscription lifecycle
-
-**Why it is needed:** enrich the Subscription catalogue and reports with the
-best available subscription creation-time estimate when directory subscription
-creation events are unavailable.
-
-**Activity Log data required:**
-
-- subscription ID;
-- event and submission timestamps of the pinned
-  `Microsoft.Management/register/action` event;
-- event status and substatus;
-- operation ID; and
-- source event ID and collection provenance.
-
-Because the recipe pins the exact operation and resource ID, no target-namespace
-extraction is needed. The result must distinguish estimated creation time,
-estimate source, and confidence. The earliest successful observed
-`Microsoft.Management` registration is a proxy, not proof of subscription
-creation.
-
-### VM configuration history
-
-**Why it is needed:** show a per-VM configuration timeline and attribute
-historical allocation attempts to the configuration that was attempted or
-effective at that time rather than to the VM's current state.
-
-**Activity Log data required:**
-
-- VM write and delete operations;
-- applied configuration from the `Accepted` stage `responseBody` (Activity Log
-  carries no separate submitted request body);
-- terminal outcome and provider errors;
-- resource ID, subscription, and timestamps;
-- operation and correlation IDs;
-- applied VM size, location, priority, and capacity-reservation association
-  (`capacityReservationGroup` id), all present in the update `responseBody`; a
-  failed write emits no `responseBody`, so its size is attributed from the VM's
-  configuration-at-the-time;
-- availability zone, which real data confirms is emitted only on the create
-  write's `responseBody` (`provisioningState = Creating`) as a top-level `zones`
-  field; update writes omit it. When the create predates the 90-day source
-  window the zone is not recoverable from Activity Log and must be read from
-  current resource state (Resource Graph). Zone is never inferred from the
-  capacity-reservation-group name; and
-- delete/recreate evidence for resource-generation boundaries.
-
-### VMSS configuration history
-
-**Why it is needed:** show scale-set model changes and provide configuration and
-requested quantity for scale and instance allocation attempts. Uniform VMSS is
-the first required mode; the representation must not prevent later Flexible
-VMSS support.
-
-**Activity Log data required:**
-
-- VMSS write/delete, scale, and relevant instance-operation events;
-- request and terminal stages;
-- scale-set and instance resource IDs;
-- submitted location, zones, SKU name, capacity, orchestration mode, and
-  capacity-reservation association when present;
-- operation/correlation identifiers and timestamps; and
-- provider errors and partial/ambiguous outcome evidence.
-
-### CRG and Capacity Reservation configuration history
-
-**Why it is needed:** show placement and reserved-capacity changes over time and
-identify capacity-reservation acquisition attempts that succeed or fail.
-
-**Activity Log data required:**
-
-- CRG and Capacity Reservation write/delete operations. The operation name
-  casing is inconsistent across events (Azure emits
-  `capacityReservationGroups`/`CapacityReservationGroups` and
-  `capacityReservations`/`CapacityReservations` interchangeably). The server-side
-  `operations` filter matches case-insensitively (verified: one filter value
-  returns all casing variants), so collection needs no casing handling; only the
-  operation identity used for pairing must normalize `operationName` casing so an
-  operation's stages are not split apart.
-- parent/child resource IDs. Each Capacity Reservation event carries its own full
-  child resource ID (`.../capacityReservationGroups/{crg}/capacityReservations/{cr}`);
-  a CRG-scoped Activity Log query (`resourceUri eq {crgId}`) returns the CRG event
-  **and all descendant Capacity Reservation events**, because `resourceUri`
-  matches hierarchically. The child resource ID keeps sibling reservations
-  distinct under the standard `correlationId + resourceId + operationName` pairing
-  key even when a single bulk deployment shares one `correlationId` across many
-  reservations (real data: 20 reservations created under one `correlationId`).
-- request and terminal stages;
-- CRG location and zones, read from the CRG write `responseBody` (real data:
-  top-level `zones` such as `['1','2','3']` plus `location`);
-- Capacity Reservation SKU name and requested capacity, read from the Capacity
-  Reservation write `responseBody`: `sku.name` (reserved VM size), `sku.capacity`
-  (requested quantity), top-level `zones`, `properties.reservationId`, and
-  `properties.provisioningState`. A quantity change is emitted as an ordinary
-  `write` whose `sku.capacity` differs from the prior write (real data:
-  `capacity` moving `0 -> 7`, `0 -> 11`, `1 -> 0`), not as a distinct operation;
-- operation/correlation identifiers and timestamps; and
-- provider error codes/messages needed to distinguish capacity shortage from
-  quota, policy, authorization, and validation failures.
-
-### Allocation history
-
-**Why it is needed:** provide a rich, cross-resource analytical dataset for
-dashboarding allocation success, failure, and likely capacity pressure by time,
-location, zone, SKU, quantity, and originating/impacted resource.
-
-**Activity Log data required:**
-
-- assembled outcomes for VM, VMSS, CR, and relevant lifecycle operations;
-- attempted configuration from request-bearing events;
-- terminal success/failure and provider error details;
-- originating resource, impacted resource, and parent resource identifiers;
-- timestamps, operation ID, correlation ID, and all source event IDs; and
-- evidence needed to represent quantity, partial outcomes, pairing confidence,
-  and unknown configuration without guessing.
-
-The allocation store will consume configuration histories as additional context,
-but source collection must preserve attempted configuration because a failed write
-never becomes effective resource state.
-
-## Required Validation Before Implementation
+## Outstanding Validation
 
 1. Capture representative real events for VM create, resize, no-op write,
    failed resize, delete/recreate, regional create, and zonal create.
@@ -834,15 +713,12 @@ never becomes effective resource state.
     terminal expiry, late terminal correction, unpaired-event handling,
     reprojection from the retained payload, and versioned replay.
 
-## Open Decisions
+## Deferred Decisions
 
 - Raw properties/request-body retention period and whether sanitization is
   required at ingestion.
 - Application storage account versus a dedicated account for retained payloads
   and their oversize Blob spill.
-- Whether the deferred Seam B handoff (Section 7) uses Queue Storage, Service
-  Bus, or watermark polling — decided with the first materializer, when its
-  fan-out, dead-letter, and throughput needs are known.
 - Exact recipe operation names and stage filters after representative-event
   validation.
 - Pending-operation expiry horizon and replay window.

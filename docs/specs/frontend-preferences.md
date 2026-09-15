@@ -2,10 +2,10 @@
 
 ## Status
 
-Implemented as of 2026-08-28.
+Current implemented contract. Last verified on 2026-08-28.
 
 This specification changes the current transient behavior documented in
-[Global Filters](global-filters.md) and [Coverage Report](coverage-report.md).
+[Global Filters](global-filters.md) and [Coverage Report](odcr-coverage-report.md).
 Those documents remain the source of truth for filter semantics and report
 behavior; this document owns only browser retention and restoration.
 

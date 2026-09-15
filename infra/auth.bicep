@@ -3,7 +3,7 @@
 // managed identity as a federated credential (no client secret). The MI-client-ID
 // app setting it relies on (OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID) is declared in
 // main.bicep. Deploy AFTER main.bicep and AFTER creating the app registration + MI
-// federated credential per docs/easy-auth-setup.md (Steps 1-4).
+// federated credential per docs/operations/easy-auth-setup.md (Steps 1-4).
 
 @description('Name of the Function App deployed by main.bicep (output functionAppName).')
 param functionAppName string

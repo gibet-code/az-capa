@@ -17,7 +17,7 @@ VM_METER_CATEGORY = "Virtual Machines"
 def build_vm_filter(resource_ids=None, subscription_ids=None) -> dict | None:
     """Build the Cost Management filter for VM meters, with optional narrowing.
 
-    Location is a read-time boundary (see ``docs/app-scope.md`` > Location Scope
+    Location is a read-time boundary (see ``docs/specs/app-scope.md`` > Location Scope
     Enforcement), not a collection-time gate: collection stores the location
     superset within the subscription/billing boundary, so no ``ResourceLocation``
     filter is sent here.

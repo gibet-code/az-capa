@@ -2,14 +2,14 @@
 
 ## Status
 
-Proposed shared frontend technical specification. It defines the reusable
-architecture for interactive reports in the no-build Alpine.js application.
-Feature specifications remain authoritative for domain calculations, visible
-content, and feature-specific interactions.
+Current shared frontend architecture, implemented for the ODCR Coverage Report.
+Further report adoption remains incremental. Feature specifications remain
+authoritative for domain calculations, visible content, and feature-specific
+interactions.
 
-The initial consumer is the [ODCR Coverage Report](coverage-report.md). The
+The initial consumer is the [ODCR Coverage Report](../specs/odcr-coverage-report.md). The
 technology choice is recorded in
-[ADR 0001: Interactive reporting stack](adr/0001-interactive-reporting-stack.md).
+[ADR 0001: Interactive reporting stack](../decisions/0001-interactive-reporting-stack.md).
 
 ## Goals
 

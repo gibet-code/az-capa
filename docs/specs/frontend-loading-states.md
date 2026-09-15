@@ -1,5 +1,9 @@
 # Frontend loading-state convention
 
+## Status
+
+Current frontend convention.
+
 All skeleton placeholders in the SPA use one visual language so a page does
 not appear to contain unrelated loading systems.
 

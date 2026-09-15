@@ -1,7 +1,12 @@
-# Backlog — VM usage pipeline
+# Backlog
 
-Parked improvements for the VM daily usage / Cost Management pipeline. Not yet
-implemented; captured here to pick up later.
+## Status
+
+Deferred planning. Items here are not current architecture or committed
+implementation work.
+
+Deferred work across the application. Completed behavior belongs in the relevant
+architecture, contract, or operations document rather than in this backlog.
 
 ## App scope editing
 Move scope configuration out of Function App environment settings and into a
@@ -87,7 +92,8 @@ Management's `ResourceLocation` dimension, which uses billing meter-region
 vocabulary (for example, `EU West`); ARM codes can match zero meter rows and
 silently under-collect.
 
-Decision (see `docs/app-scope.md` > Location Scope Enforcement): location is a
+Decision (see [Application Scope](../specs/app-scope.md#location-scope-enforcement)):
+location is a
 **read-time** boundary enforced on each row's canonical ARM `location`, not a
 collection-time gate. Required changes:
 
@@ -131,7 +137,7 @@ for the Functions host: deployment package, keys, leases — the app code only u
 Tables) and Blob/Queue/Table Data Contributor on the durable account; deployment
 storage authenticates via `UserAssignedIdentity`. Locally the stores fall back to
 the Azurite dev connection string (`is_running_locally()` gate in
-`shared/settings.table_service_client()`). Flex Consumption `FC1` plan; `sites`
+`storage.table.table_service_client()`). Flex Consumption `FC1` plan; `sites`
 kind `functionapp,linux` with `functionAppConfig` (python 3.12, `alwaysReady
 durable instanceCount:1`); `AZURE_CLIENT_ID` set for the collectors' ARM access
 (grant the MI **Reader** on the target scope manually — above the RG-scoped
@@ -145,7 +151,8 @@ Two planes (a button can only do the first):
 - **Azure resources** via Bicep/ARM — the button (compile `main.bicep` →
   `azuredeploy.json` at a public raw URL; optional `createUiDefinition.json`).
 - **Entra app registration + admin consent + Easy Auth wiring** — NOT ARM. See
-  the manual guide `docs/easy-auth-setup.md` (automate later).
+  the manual guide [Easy Auth setup](../operations/easy-auth-setup.md)
+  (automate later).
 
 **Reusable from the reference Bicep** (FinOps disk-advisor `bicep/main.bicep`):
 - **Flex Consumption:** `serverfarms` `FC1` `reserved:true`; `sites` kind
@@ -160,13 +167,14 @@ Two planes (a button can only do the first):
   keys, `allowSharedKeyAccess: false`); role assignments Storage **Blob + Table
   Data Contributor** on the app-data account (Blob for the Functions host,
   Table for the app data) and **Blob / Queue / Table Data Contributor** on the
-  durable account. The pipeline stores build their `TableServiceClient` from `shared/settings.table_service_client()`, which
+  durable account. The pipeline stores build their `TableServiceClient` from
+  `storage.table.table_service_client()`, which
   uses the MI credential in Azure and the Azurite dev connection string locally.
 - **Easy Auth (`authsettingsV2`):** `tokenStore.enabled=true` +
   `tokenRefreshExtensionHours`. Reference app uses a **secretless app-reg** via a
   managed-identity **federated credential** (`clientSecretSettingName`
   → `OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID`) instead of a client secret — prefer
-  this over a stored secret. **MUST ADD** the B1 login scope:
+  this over a stored secret. **MUST ADD** the ARM delegated login scope:
   `login.loginParameters: ['scope=openid profile offline_access https://management.azure.com/user_impersonation']`
   so `X-MS-TOKEN-AAD-ACCESS-TOKEN` is an ARM token.
 - **Private/public:** `deploymentMode` param; VNet + subnet **delegated to
@@ -186,16 +194,7 @@ egress or a supported private path; document the required outbound (there is no
 Private Link for ARM), or gate features that need it. Private endpoints cover
 blob/queue/table/site; ARM egress is the open question to design for.
 
-## 7. App Roles authorization (User + Admin)
-
-**Implemented and Azure-validated on 2026-08-31.** The role model, trust
-boundaries, endpoint policy, frontend contract, local simulator, provisioning
-ownership, and verification matrix are now maintained as the current-state
-specification in [Authorization](docs/authorization.md). The deployment and
-tenant configuration procedure remains in
-[Easy Auth setup](docs/easy-auth-setup.md).
-
-## 8. Business Context scheduled-refresh notifications
+## 7. Business Context scheduled-refresh notifications
 Avoid filling Notification history with routine Business Context refreshes that
 run every 15 minutes. Keep successful scheduled refreshes in status metadata,
 telemetry, and logs rather than creating retained user notifications.
@@ -209,7 +208,7 @@ telemetry, and logs rather than creating retained user notifications.
 - Keep field-level outcomes summarized under the refresh operation rather than
   creating one notification per Context field.
 
-## 9. Cache provenance + L1-bypass on ODCR coverage/usage responses
+## 8. Cache provenance + L1-bypass on ODCR coverage/usage responses
 The ODCR coverage (`/api/odcr/coverage`) and usage (`/api/odcr_usage/list`)
 endpoints already emit a per-step `Server-Timing` header for troubleshooting.
 Extend that diagnostics surface with cache provenance and an opt-in L1 bypass so

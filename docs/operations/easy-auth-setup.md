@@ -1,4 +1,8 @@
-# Easy Auth setup (user-token forwarding for VM actions)
+# Easy Auth setup
+
+## Status
+
+Current operational runbook.
 
 This guide configures **App Service Authentication (Easy Auth)** on the deployed
 Function App so that:
@@ -10,8 +14,8 @@ Function App so that:
   `GET /api/odcr/coverage`) return only what the **signed-in user** can see — the same
    list as the Azure portal — instead of the app's managed identity view.
 
-This is the **B1** approach: no On-Behalf-Of code, no client secret required if you
-use the managed-identity federated credential option below.
+This configuration requires no On-Behalf-Of code and no client secret when the
+managed-identity federated credential option below is used.
 
 > Managed identity stays in charge of the background collectors (VM/CR usage,
 > Activity Log, Zone Mapping). Easy Auth only adds the **user** identity used by
@@ -23,7 +27,7 @@ App Service Authentication itself (the app setting + `authsettingsV2`) is done b
 the `infra/auth.bicep` template. App-role definitions and assignments are
 intentionally not provisioned by Bicep.
 
-See [Authorization](authorization.md) for the normative role, trust-boundary,
+See [Authorization](../specs/authorization.md) for the normative role, trust-boundary,
 endpoint-policy, and frontend-capability contract. This document is the
 deployment and operational procedure for that specification.
 

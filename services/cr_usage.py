@@ -26,7 +26,7 @@ CR_RESOURCE_TYPES = ["microsoft.compute/capacityreservationgroups"]
 def build_cr_filter(resource_ids=None, subscription_ids=None) -> dict | None:
     """Build the Cost Management filter for capacity-reservation usage.
 
-    Location is a read-time boundary (see ``docs/app-scope.md`` > Location Scope
+    Location is a read-time boundary (see ``docs/specs/app-scope.md`` > Location Scope
     Enforcement), not a collection-time gate: collection stores the location
     superset within the subscription/billing boundary, so no ``ResourceLocation``
     filter is sent here.

@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed frontend specification. No implementation is implied by this document.
+Current implemented frontend contract. The unresolved UX questions near the end
+of this document are follow-up refinements, not prerequisites for the current
+report.
 
 This document records the current ODCR Coverage report and VM table behavior,
 then specifies the report rework. It intentionally does not redesign the
@@ -12,11 +14,11 @@ placeholders for later work.
 ## Technical dependency
 
 This feature uses the shared
-[Frontend reporting architecture](frontend-reporting-architecture.md) for its
+[Frontend reporting architecture](../architecture/frontend-reporting.md) for its
 report model, reference, focus, and visual populations, coordinated selections, ECharts
 lifecycle, rendering boundaries, and shared accessibility mechanics. The stack
 choice is recorded in
-[ADR 0001: Interactive reporting stack](adr/0001-interactive-reporting-stack.md).
+[ADR 0001: Interactive reporting stack](../decisions/0001-interactive-reporting-stack.md).
 
 This document remains authoritative for ODCR domain calculations, visible
 content, layout, feature-specific interactions, VM-table effects, and acceptance
@@ -272,7 +274,7 @@ reloads, and browser restarts. It is retained in identity-partitioned browser
 Required when no retained preference exists. Category selections do not
 persist across a full page reload; Clear report filters resets the Coverage
 category facet without changing ownership. See
-[Frontend Preference Store](frontend-preference-store.md).
+[Frontend Preference Store](frontend-preferences.md).
 
 The block title, bullets, counts, and move action share one inline flex row and
 wrap together when space is insufficient. The action remains immediately after

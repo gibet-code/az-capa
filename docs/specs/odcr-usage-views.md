@@ -1,4 +1,9 @@
-# ODCR usage views plan
+# ODCR usage views
+
+## Status
+
+Current implemented frontend and API contract. The implementation checklist at
+the end is retained only as a verification summary.
 
 ## Goal
 
@@ -107,8 +112,6 @@ Filters:
 Keep the Capacity Reservation Group filter for direct selection and chart interactions. The Deployment filter has no logical/physical switch in this view and does not expose individual zones.
 
 Text search matches the CRG name and the other displayed group fields. It does not match child reservation names or sizes.
-
-> Requirement clarification: the request says the text filter should "no longer filter on CRG name." That would make the first and primary column unsearchable. This plan assumes the intended requirement was "no longer filter on reservation name." If the literal behavior is required, remove CRG name from this view's search fields.
 
 Chart **Group by** options:
 
@@ -335,10 +338,12 @@ Browser verification:
 - Toggle repeatedly between views and verify filters, chart grouping, table headers, counts, deleted badges, and CSV.
 - Confirm the endpoint `Server-Timing` exposes both parallel query timings and total Resource Graph wall time.
 
-## Implementation slices
+## Implementation verification
 
-1. Add CRG/CR query builders and reconciliation helpers with focused unit tests.
-2. Change the endpoint to parallel queries and the v2 normalized response; validate endpoint tests.
-3. Add frontend normalized state and the view selector; keep reservation view behavior unchanged.
-4. Add group derivation, filters, chart options, table, and CSV.
-5. Add frontend tests and complete desktop/mobile browser verification.
+- CRG and CR query builders and reconciliation helpers have focused unit tests.
+- The endpoint runs parallel queries and returns the normalized v2 response.
+- The frontend keeps normalized reservation and group state and switches views
+  without another request.
+- Group derivation, filters, chart options, table rendering, and CSV export use
+  the active view.
+- Desktop and mobile behavior is covered by frontend and browser verification.

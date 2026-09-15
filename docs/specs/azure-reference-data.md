@@ -2,9 +2,9 @@
 
 ## Status
 
-Implemented baseline plus approved pending lifecycle and App Scope integration
-changes as of 2026-08-30. The target lifecycle is refresh-only; existing flush
-surfaces remain implementation work to remove.
+Current implemented architecture. Subscription and Location catalogues use a
+refresh-only lifecycle and integrate with App Scope. Last verified on
+2026-09-15.
 
 Azure Reference Data owns native Azure identifier-to-display metadata. The
 implemented catalogues are Subscription and Location. They are independent from
