@@ -53,6 +53,15 @@ must not be referenced from Bicep.
    operator's workstation, for example under `C:\Downloads`.
 4. Do not extract or rebuild the ZIP. Retain the release version and checksum
    supplied with the release for the deployment record.
+5. Verify the downloaded ZIP against the release checksum before deployment:
+
+```powershell
+$ZipPath = 'C:\Downloads\az-capacity-<version-or-commit>.zip'
+Get-FileHash -Path $ZipPath -Algorithm SHA256
+```
+
+Compare the reported hash with the release-provided SHA-256 checksum. Stop if
+they do not match.
 
 ## 3. Deploy the Azure infrastructure
 
@@ -60,11 +69,16 @@ Copy `infra/main.bicepparam` to an environment-specific parameter file and set a
 least `namePrefix`, `scope`, `costManagement`, and `storageConnectivity`. Do not
 add Entra application IDs: Easy Auth is a separate deployment phase.
 
+Keep the copied file next to `infra/main.bicep` unless you also update its
+relative `using` path. Bicep parameter files do not accept an absolute Windows
+drive path in the `using` declaration.
+
 Create the resource group and deploy the template:
 
 ```powershell
 $ResourceGroup = '<resource-group>'
 $Location = '<azure-region>'
+$ParameterFile = 'infra/main.<environment>.bicepparam'
 
 az group create --name $ResourceGroup --location $Location
 
@@ -72,7 +86,7 @@ $Deployment = az deployment group create `
   --resource-group $ResourceGroup `
   --name azcapacity-infra `
   --template-file infra/main.bicep `
-  --parameters infra/main.bicepparam `
+  --parameters $ParameterFile `
   --query properties.outputs.result.value `
   --output json | ConvertFrom-Json
 
@@ -154,9 +168,12 @@ ZIP downloaded in Step 2 and keep remote build disabled.
 3. From the account menu, select **Log Out**. Confirm the session ends and the
    application requires Entra sign-in again.
 4. Sign back in with the same administrator account.
-5. Open **Settings → Data Collection**. Start the initial collection for each
-   enabled data source and wait for it to complete. Confirm the status and last
-   update information show successful collection for the configured scope.
+5. Open **Settings → Data Collection** and refresh the statuses. Initial
+  collections may already have started automatically. Leave pipelines that are
+  **Running** alone; start only enabled pipelines with no previous run. Wait for
+  each initial run to reach **Completed** or **No work**, and confirm the last
+  update information covers the configured scope. Short-frequency pipelines may
+  begin their next scheduled run while verification is still in progress.
 6. Open **ODCR Coverage** and **ODCR Usage** and confirm both reports load.
 
 > ODCR reports inherit the Azure scope visible to the signed-in user. The listed

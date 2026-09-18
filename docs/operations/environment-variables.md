@@ -18,6 +18,38 @@ matches the code default.
 
 ## Application configuration
 
+### Deployment choices
+
+Use these rules when setting `scope`, `costManagement`, and
+`storageConnectivity` in `infra/main.bicepparam`:
+
+| Choice | Values and requirements |
+|---|---|
+| Application scope | Set either comma-separated `subscriptionIds` or comma-separated `managementGroupIds`, never both. Leave both empty to discover every subscription visible to the application identity. `locations` is an optional comma-separated Azure location filter; leave it empty for all locations. |
+| Cost method | `per-sub` queries each resolved subscription and does not use billing IDs. `per-billing` queries at billing scope and requires `billingAccountId`. |
+| Agreement type | Use `ea` for an Enterprise Agreement or `mca` for a Microsoft Customer Agreement. MCA `per-billing` deployments also require `billingProfileId`. |
+| Storage connectivity | `Public` uses public storage endpoints. `ServiceEndpoint` creates a VNet and restricts storage to the injected Function App subnet. `PrivateEndpoint` disables storage public access and creates private endpoints and private DNS. |
+
+Example: discover all subscriptions visible to the application identity and
+query Cost Management per subscription:
+
+```bicep
+param scope = {
+  subscriptionIds: ''
+  managementGroupIds: ''
+  locations: ''
+}
+
+param costManagement = {
+  method: 'per-sub'
+  agreementType: 'ea'
+  billingAccountId: ''
+  billingProfileId: ''
+}
+
+param storageConnectivity = 'PrivateEndpoint'
+```
+
 | Environment variable | Default in code when absent or empty | Bicep value after audit | Status |
 |---|---|---|---|
 | `SCOPE_SUBSCRIPTION_IDS` | `[]` | `scope.subscriptionIds` | Kept: deployment parameter |

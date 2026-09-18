@@ -127,8 +127,16 @@ az ad app permission add --id "$APP_ID" \
   --api 797f4846-ba00-4fd7-ba43-dac1f8f63013 \
   --api-permissions 41094075-9dad-400e-a0bd-54e686782033=Scope
 
-az ad app permission admin-consent --id "$APP_ID"
+az ad app permission grant --id "$APP_ID" \
+  --api 797f4846-ba00-4fd7-ba43-dac1f8f63013 \
+  --scope user_impersonation
+
+az ad app permission list-grants --id "$APP_ID" \
+  --show-resource-name
 ```
+
+Confirm the output contains an `AllPrincipals` grant for the Windows Azure
+Service Management API with the `user_impersonation` scope.
 
 ## Step 4 — Define app roles and assign users/groups
 
