@@ -296,20 +296,32 @@ class ActivityLogPipeline:
         subscription_id = request.get("subscriptionId")
         max_units = int(request.get("maxUnits", settings.activity_log_replay_max_units_per_run()))
         if not subscription_id or max_units <= 0:
-            return {"subscriptionId": subscription_id, "reconciled": 0}
+            return {"subscriptionId": subscription_id, "status": "ok", "reconciled": 0}
 
-        now = _utc_now()
-        horizon = timedelta(hours=settings.activity_log_pending_unknown_hours())
-        rows = self._store.query_operations(subscription_id)
-        targets = [row for row in rows if _row_needs_reconcile(row, now, horizon)][:max_units]
+        try:
+            now = _utc_now()
+            horizon = timedelta(hours=settings.activity_log_pending_unknown_hours())
+            rows = self._store.query_operations(subscription_id)
+            targets = [row for row in rows if _row_needs_reconcile(row, now, horizon)][:max_units]
 
-        updates = []
-        for row in targets:
-            operation = self._store.hydrate_operation(row)
-            if _reconcile_operation(operation, now, horizon):
-                updates.append(operation)
-        upserted = self._store.upsert_operations(updates) if updates else 0
-        return {"subscriptionId": subscription_id, "reconciled": upserted}
+            updates = []
+            for row in targets:
+                operation = self._store.hydrate_operation(row)
+                if _reconcile_operation(operation, now, horizon):
+                    updates.append(operation)
+            upserted = self._store.upsert_operations(updates) if updates else 0
+            return {"subscriptionId": subscription_id, "status": "ok", "reconciled": upserted}
+        except Exception as exc:  # noqa: BLE001 - isolate one subscription's reconciliation
+            logging.exception(
+                "Activity Log reconciliation failed for subscription %s",
+                subscription_id,
+            )
+            return {
+                "subscriptionId": subscription_id,
+                "status": "error",
+                "error": str(exc),
+                "reconciled": 0,
+            }
 
     def write_state(self, state) -> dict:
         coverages = [state] if isinstance(state, dict) else list(state or [])

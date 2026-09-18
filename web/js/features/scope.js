@@ -28,7 +28,7 @@ function createScopeFeature() {
       this.globalScopeDraft = JSON.parse(JSON.stringify(this.globalScope));
     },
 
-    async loadScopeInventory() {
+    async loadScopeInventory({ reconcileContextFilters = false } = {}) {
       const request = this._scopeRequests.begin();
       this.scopeInventoryLoading = true;
       this.scopeInventoryError = "";
@@ -41,12 +41,42 @@ function createScopeFeature() {
           contextFields: data.contextFields || [],
         };
         this.scopeInventoryLoaded = true;
+        if (reconcileContextFilters) this.reconcileUnavailableContextFilters();
       } catch (error) {
         if (error && error.name === "AbortError") return;
         this.scopeInventoryError = error.message || String(error);
       } finally {
         if (this._scopeRequests.isCurrent(request.id)) this.scopeInventoryLoading = false;
         this._scopeRequests.finish(request.id);
+      }
+    },
+
+    reconcileUnavailableContextFilters() {
+      const availableFieldKeys = new Set(this.scopeCatalogue.contextFields.map((field) =>
+        String(field.fieldKey || "").trim().toLocaleLowerCase()
+      ));
+      const unavailableCriteria = this.globalScope.contextFilters.filter((criterion) =>
+        !availableFieldKeys.has(String(criterion.fieldKey).trim().toLocaleLowerCase())
+      );
+      if (!unavailableCriteria.length) return;
+
+      const unavailableFieldKeys = new Set(unavailableCriteria.map((criterion) => criterion.fieldKey));
+      this.globalScope = {
+        ...this.globalScope,
+        contextFilters: this.globalScope.contextFilters.filter((criterion) =>
+          !unavailableFieldKeys.has(criterion.fieldKey)
+        ),
+      };
+      this.globalScopeDraft = {
+        ...this.globalScopeDraft,
+        contextFilters: this.globalScopeDraft.contextFilters.filter((criterion) =>
+          !unavailableFieldKeys.has(criterion.fieldKey)
+        ),
+      };
+      if (typeof this.persistGlobalScope === "function") this.persistGlobalScope(this.globalScope);
+      if (typeof this.notify === "function") {
+        const labels = unavailableCriteria.map((criterion) => criterion.fieldKey).join(", ");
+        this.notify(`Removed unavailable global Context filter${unavailableCriteria.length === 1 ? "" : "s"}: ${labels}.`, "warning");
       }
     },
 
@@ -122,7 +152,16 @@ function createScopeFeature() {
 
     async applyGlobalScope() {
       if (!this.globalScopeDraftValid) return;
-      this.globalScope = JSON.parse(JSON.stringify(this.globalScopeDraft));
+      await this.commitGlobalScope(this.globalScopeDraft);
+    },
+
+    async removeAllGlobalScope() {
+      await this.commitGlobalScope({ subscriptionIds: null, locations: null, contextFilters: [] });
+    },
+
+    async commitGlobalScope(scope) {
+      this.globalScope = JSON.parse(JSON.stringify(scope));
+      this.globalScopeDraft = JSON.parse(JSON.stringify(scope));
       if (typeof this.persistGlobalScope === "function") this.persistGlobalScope(this.globalScope);
       this.scopeMenuOpen = false;
       if (this.odcrTab === "usage") {

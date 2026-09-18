@@ -314,8 +314,23 @@ class ReconcileTests(unittest.TestCase):
 
         result = pipeline.reconcile_subscription({"subscriptionId": "sub-1", "maxUnits": 0})
 
-        self.assertEqual({"subscriptionId": "sub-1", "reconciled": 0}, result)
+        self.assertEqual(
+            {"subscriptionId": "sub-1", "status": "ok", "reconciled": 0},
+            result,
+        )
         store.query_operations.assert_not_called()
+
+    def test_reconcile_subscription_returns_error_when_storage_fails(self):
+        store = MagicMock()
+        store.query_operations.side_effect = ConnectionError("storage reset")
+        pipeline = ActivityLogPipeline(store)
+
+        result = pipeline.reconcile_subscription({"subscriptionId": "sub-1", "maxUnits": 2})
+
+        self.assertEqual("error", result["status"])
+        self.assertEqual("sub-1", result["subscriptionId"])
+        self.assertEqual("storage reset", result["error"])
+        self.assertEqual(0, result["reconciled"])
 
 
 if __name__ == "__main__":

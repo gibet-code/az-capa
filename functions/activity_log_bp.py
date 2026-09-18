@@ -70,6 +70,7 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
     # operations from stored payloads. Runs for every planned subscription
     # regardless of this run's fetch outcome; bounded per subscription per run.
     reconciled = 0
+    reconcile_failures = []
     subscription_ids = [unit["subscriptionId"] for unit in work_units]
     for start in range(0, len(subscription_ids), concurrency):
         batch = subscription_ids[start:start + concurrency]
@@ -81,11 +82,14 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
             for subscription_id in batch
         ]
         for result in (yield context.task_all(tasks)):
-            reconciled += result.get("reconciled", 0)
+            if result.get("status") == "error":
+                reconcile_failures.append(result)
+            else:
+                reconciled += result.get("reconciled", 0)
 
     committed = sum(1 for outcome in outcomes if outcome.get("committed"))
     return {
-        "status": "completed" if not failures else "partial",
+        "status": "completed" if not failures and not reconcile_failures else "partial",
         "action": plan["reason"],
         "subscriptions": total,
         "committedSubscriptions": committed,
@@ -94,6 +98,7 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
         "upserted": sum(outcome.get("upserted", 0) for outcome in outcomes),
         "reconciled": reconciled,
         "failed": len(failures),
+        "reconcileFailed": len(reconcile_failures),
     }
 
 

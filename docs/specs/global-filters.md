@@ -25,7 +25,8 @@ The card contains:
 - Location, backed by Azure Location Reference Data.
 - One selector for each enabled Business Context field.
 - A refresh action that rereads the published catalogue.
-- Save and Cancel actions.
+- Save, Cancel, and **Remove all** actions. Remove all is separated at the
+  right edge of the footer action row.
 
 Each selector has an independent enable switch. Enabled selectors expose search
 and checkbox options. Multiple selectors may be expanded simultaneously. Each
@@ -41,6 +42,11 @@ and show visible subscription counts. JSON `null` is **Not mapped**.
 Opening the card creates a draft copy. Cancel or clicking outside discards the
 draft. Save replaces the applied criteria, closes the card, and reloads the
 active report. The inactive report is invalidated and reloads when opened.
+
+Remove all immediately replaces the applied criteria with unrestricted
+Subscription, Location, and Context state, persists that state, closes the
+card, reloads the active report, and invalidates the inactive report. It remains
+available when the catalogue is unavailable or loading.
 
 Save is disabled while the catalogue is unavailable or loading, and when an
 enabled selector has no values selected.
@@ -71,6 +77,13 @@ memory and are discarded by Cancel, dismissal, or page reload. Storage is
 partitioned by tenant and user in Azure and uses a dedicated local-development
 partition. It is not written to cookies, the URL, or the backend. See
 [Frontend Preference Store](frontend-preferences.md).
+
+When restored Context criteria exist, the catalogue loads before the first
+report request. Criteria for Context fields absent from the successfully loaded
+enabled-field catalogue are removed and the reconciled applied state is
+persisted. Existing values for fields that remain available are not reconciled
+against their option lists. A catalogue error preserves the restored criteria
+and the backend continues to fail unknown or disabled criteria closed.
 
 Effective population:
 

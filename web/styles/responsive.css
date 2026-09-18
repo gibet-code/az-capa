@@ -149,8 +149,7 @@ progress { width: 160px; height: 8px; accent-color: var(--accent); }
   .reservation-pie::after { inset: 21px; }
   .reservation-pie > span { font-size: 15px; }
   .reservation-legend-row { grid-template-columns: 8px minmax(0, 1fr) 25px 30px; gap: 4px; font-size: 10px; }
-  .vm-page { height: auto; min-height: calc(100vh - 84px); }
-  .vm-page::after { display: none; }
+  .vm-page { min-height: calc(100vh - 84px); }
   .tabs { overflow-x: auto; }
   .tabs button { flex: 0 0 auto; padding-right: 11px; padding-left: 11px; }
   .business-context-command-bar { align-items: center; }

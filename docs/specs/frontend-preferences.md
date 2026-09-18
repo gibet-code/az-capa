@@ -28,8 +28,10 @@ decisions.
 - Restore preferences after the signed-in identity has been resolved.
 - Isolate preferences by tenant and user on a shared browser.
 - Persist only committed Global Filters, never an open card's draft edits.
-- Preserve existing Global Filter values exactly, including values that are no
-  longer present in the current catalogue.
+- Preserve values for Global Filter dimensions that remain available, including
+  values that are no longer present in the current catalogue.
+- Remove and persist Context criteria whose field is no longer enabled or
+  present in a successfully loaded catalogue.
 - Keep Unmarked ownership independent from the selected Global Filters.
 - Fail safely when browser storage is unavailable, malformed, or from an
   unsupported schema version.
@@ -40,8 +42,7 @@ decisions.
 - Live synchronization between multiple open tabs.
 - Encryption or storage of credentials, tokens, user profiles, report data, or
   coverage decisions.
-- A new Clear or Reset preferences action.
-- Expiration, catalogue reconciliation, or unavailable-value recovery UI.
+- Expiration or unavailable-value recovery UI.
 - Retaining local report filters, search, sorting, pagination, group-by,
   Coverage category selections, or unapplied Global Filter drafts.
 
@@ -184,10 +185,18 @@ a successful UI Save and are rejected during restoration rather than creating
 a persisted fail-closed selection.
 
 Strings are not trimmed, normalized, deduplicated, or matched against the
-catalogue during restoration. This deliberately matches current in-memory
-behavior. Previously valid values that have since been removed or disabled are
-preserved until the user saves different filters or clears browser site data.
-They may produce zero rows or an existing backend filter error.
+catalogue during storage restoration. When restored Context criteria exist,
+the application successfully loads the catalogue before the first report
+request and removes criteria whose `fieldKey` is not an enabled catalogue
+field. The comparison is case-insensitive. It persists the reconciled applied
+scope and notifies the user which field keys were removed. Criteria for fields
+that remain available are preserved exactly, including values that are no
+longer present in the field's current option list.
+
+If catalogue loading fails, no criteria are removed or persisted. The report
+continues with the restored criteria and the backend's existing fail-closed
+behavior. This prevents a transient catalogue failure from silently widening a
+saved filter.
 
 Malformed JSON, a non-object value, or an unknown `schemaVersion` causes the
 entire record to be ignored. The invalid value may be removed best-effort. No
@@ -221,8 +230,10 @@ Required startup ordering:
 2. Resolve local mode or the signed-in `tid` and `oid`.
 3. Derive the identity-partitioned storage key.
 4. Read, parse, validate, and restore the preference record.
-5. Mark preference initialization complete.
-6. Load the report selected by the current route.
+5. When restored Context criteria exist, load the catalogue and reconcile
+  unavailable Context fields.
+6. Mark preference initialization complete.
+7. Load the report selected by the current route.
 
 Report loading triggered by routing must wait on one shared initialization
 promise rather than issue an unfiltered request first. The app must avoid a
@@ -263,9 +274,14 @@ Route changes, Coverage/Usage tab changes, report Refresh, **Clear report
 filters**, and **Reset VM filters** do not alter stored preferences. A full page
 reload restores both retained properties.
 
-There is no application-level reset action in this scope. Users can change and
-Save Global Filters, move Unmarked back to ODCR Required, or clear browser site
-data.
+There is no action that resets the whole preference record. Users can change
+and Save Global Filters, use **Remove all** in the Global Filters card, or move
+Unmarked back to ODCR Required.
+
+**Remove all** immediately commits and persists the unrestricted Global Filter
+scope, closes the card, reloads the active report, and invalidates the inactive
+report. It does not require catalogue availability and does not change
+`coverageUnmarkedOwner`.
 
 ### Multiple tabs
 
@@ -330,13 +346,16 @@ must never expand the signed-in user's permitted scope.
 7. Local development uses only the dedicated local partition.
 8. Missing production identity claims disable persistence instead of using a
    shared fallback key.
-9. Stale but structurally valid filter values are restored unchanged without a
-   catalogue request or automatic removal.
+9. Restored Context criteria are reconciled before the first report request;
+  criteria for unavailable fields are removed and persisted, while values for
+  available fields remain unchanged.
 10. Malformed JSON, unsupported versions, invalid properties, unavailable
     storage, and write failures do not prevent report use.
 11. No token, credential, identity profile, catalogue, report row, or coverage
     decision is written to browser storage.
 12. A second open tab does not change until it reloads.
+13. **Remove all** persists an unrestricted Global Filter scope without
+  changing Unmarked ownership and reloads the active report.
 
 ## Verification Plan
 
@@ -351,8 +370,12 @@ must never expand the signed-in user's permitted scope.
 - Merge-before-write preservation of the property not being changed.
 - Best-effort behavior when every `localStorage` operation throws.
 - Startup ordering: the initial Coverage and Usage requests contain restored
-  criteria and no earlier unfiltered request is issued.
-- Save/cancel behavior: only Save writes Global Filters.
+  and reconciled criteria and no earlier report request is issued.
+- Reconciliation removes and persists unavailable Context fields only after a
+  successful catalogue response; failed catalogue loading preserves them.
+- Save/cancel behavior: Save writes Global Filters and Cancel does not.
+- Remove-all behavior: unrestricted scope is persisted, the active report is
+  reloaded, and Unmarked ownership is preserved.
 - Moving Unmarked writes ownership and preserves active category selection.
 - Existing clear/reset/refresh actions do not overwrite either preference.
 

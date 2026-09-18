@@ -23,10 +23,9 @@ managed-identity federated credential option below is used.
 
 Do this once per deployed instance, after the Azure infrastructure deployment.
 The Entra administrator creates the app registration, federated credential,
-`User` / `Admin` app roles, and assignments manually in the portal. After that
-handoff, the Azure infrastructure operator enables App Service Authentication
-with `infra/auth.bicep`. Entra resources, role definitions, and assignments are
-intentionally never provisioned by `infra/main.bicep`.
+`User` / `Admin` app roles, and assignments manually in the portal. Entra
+resources, role definitions, and assignments are intentionally never provisioned
+by `infra/main.bicep`.
 
 For the complete installation order and role handoffs, start with
 [Install Azure Capacity in Azure](installation.md). This page is the detailed
@@ -104,7 +103,7 @@ CLI:
 az ad app update --id "$APP_ID" --identifier-uris "api://$APP_ID"
 ```
 
-Remember `api://$APP_ID` — it goes into `allowedAudiences` in Step 6.
+`api://$APP_ID` is the token audience for this application.
 
 ## Step 3 — Add the ARM delegated permission + admin consent
 
@@ -131,7 +130,7 @@ az ad app permission add --id "$APP_ID" \
 az ad app permission admin-consent --id "$APP_ID"
 ```
 
-## Step 4 — Define the User and Admin app roles
+## Step 4 — Define app roles and assign users/groups
 
 App roles are defined manually on the app registration. Their **Value** is the
 exact, case-sensitive string that Easy Auth places in the authenticated client
@@ -149,6 +148,17 @@ Keep the generated role IDs stable. Do not delete and recreate roles during a
 normal redeployment: assignments refer to those IDs. Entra app roles do not
 inherit from one another, but the application treats `Admin` as satisfying its
 User policy, so administrators need only the `Admin` assignment.
+
+Immediately after creating the roles, configure assignments on the app
+registration's **enterprise application** (service principal):
+
+1. Portal: **Entra ID → Enterprise applications → &lt;this application&gt; → Users
+  and groups → Add user/group**.
+2. Assign at least one administrator to `Admin` and assign the intended report
+  users to `User`. A security group can be assigned where tenant licensing
+  permits it; nested group membership does not cascade.
+3. Go to **Enterprise application → Properties → Assignment required? → Yes →
+  Save**.
 
 > Role authorization uses Easy Auth's Base64-encoded
 > `X-MS-CLIENT-PRINCIPAL` header (`role_typ` and `claims`). The separate
@@ -174,108 +184,20 @@ Add credential**:
 - **Audience:** leave the default **`api://AzureADTokenExchange`** — do not change it.
 - **Add**.
 
-## Step 6 — Hand the application ID to the Azure operator
+## Step 6 — Return the application IDs
 
 Give the Azure infrastructure operator the following non-secret values:
 
 - Application (client) ID
 - Entra tenant ID
-- Function App name and resource group, if the teams do not share that context
 
-The Azure operator performs the remainder of this step. No Entra administrative
-permissions are needed to deploy `infra/auth.bicep`.
-
-### Enable App Service Authentication (authsettingsV2)
-
-`infra/auth.bicep` applies `authsettingsV2` (Entra provider, token store, and the
-ARM login scope) to the deployed app. The MI-client-ID app setting it relies on,
-`OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID`, is declared in `main.bicep` (a separate
-template can't read and rewrite the app's `appsettings` collection in the same
-deployment — ARM rejects that as a circular dependency), so make sure `main.bicep`
-has been (re)deployed first. Deploy this after Steps 1–5.
-
-Fill in `infra/auth.bicepparam`:
-
-- `functionAppName` — the deployed app (main.bicep output `functionAppName`).
-- `appRegistrationClientId` — the Application (client) ID from Step 1.
-
-Deploy:
-
-```bash
-az deployment group create \
-  --resource-group "$RG" \
-  --name azcapacity-auth \
-  --template-file infra/auth.bicep \
-  --parameters infra/auth.bicepparam
-```
-
-What the template sets, and why:
-
-- `tokenStore.enabled: true` — required, or the `X-MS-TOKEN-AAD-*` headers are
-  never injected.
-- `offline_access` in the login scope — gives the token store a refresh token so
-  the forwarded ARM token can be refreshed (it lives ~1h).
-- `<resourceManager>/user_impersonation` — makes the forwarded access token an
-  **ARM-audience** token, exactly what the backend passes to `run_graph_query`.
-- `clientSecretSettingName` points at `OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID`
-  (the MI client ID app setting from `main.bicep`) — the secretless MI
-  federated-credential path, so no client secret is stored.
-
-## Step 7 — Assign users/groups and require assignment
-
-Role assignments are managed on the app registration's **enterprise application**
-(service principal), not on the Function App and not by Bicep.
-
-1. Portal: **Entra ID → Enterprise applications → &lt;this application&gt; → Users
-  and groups → Add user/group**.
-2. Assign at least one pilot administrator to `Admin` and one pilot report user
-  to `User`. A security group can be assigned where tenant licensing permits it;
-  nested group membership does not cascade.
-3. Sign out of the app and sign back in as each pilot. Verify the role appears in
-  `/.auth/me` and that the authorization matrix in Step 8 works.
-4. Only after the pilot `Admin` is proven, go to **Enterprise application →
-  Properties → Assignment required? → Yes → Save**.
-
-With assignment required, a user or group that has no assignment is rejected by
-Entra during sign-in, before Easy Auth can serve the SPA. The browser normally
-shows Entra's generic not-assigned error (commonly `AADSTS50105`). This is the
-intended behavior. A user who can authenticate through a stale or incorrectly
-configured assignment but whose principal contains neither `User` nor `Admin`
-is rejected by the application APIs with HTTP 403.
-
-> Do not enable **Assignment required** before a working `Admin` assignment has
-> been verified, or the administrators can lock themselves out. After adding,
-> removing, or changing an assignment, sign out and sign back in so Easy Auth
-> receives a new role-bearing token/session.
-
-## Step 8 — Verify
-
-1. Browse to `https://<app>.azurewebsites.net` — you should be redirected to sign
-  in, then land on the SPA. The account menu shows your account (not "Local dev").
-2. Check the token store and principal — open
-  `https://<app>.azurewebsites.net/.auth/me`. Confirm the provider token is
-  populated and the client-principal claims contain exactly the assigned `User`
-  or `Admin` role. Calls should also carry `X-MS-TOKEN-AAD-ACCESS-TOKEN`.
-3. As `User`, verify ODCR Coverage and Usage load and visible VM coverage decisions
-  can be edited. Settings and Notifications must not be shown; direct calls to
-  their APIs and all status/refresh/flush APIs must return HTTP 403.
-4. As `Admin`, verify ODCR reports, Settings, Business Context, collection status,
-  refresh/flush, and Notifications all work. `Admin` must satisfy User access
-  without a second role assignment.
-5. Open the app as an unassigned tenant user after **Assignment required** is
-  enabled. Entra must reject sign-in before the SPA is served.
-6. For both assigned roles, ODCR data must still be trimmed by the signed-in
-  user's Azure RBAC. A user with no VM access sees an empty result; the app's
-  managed identity inventory is not substituted.
-7. If a report is empty unexpectedly, re-check Step 3 admin consent and the ARM
-  `user_impersonation` login scope in Step 6, then sign out
-  (`/.auth/logout`) and back in to refresh the token store.
+The Entra configuration is complete.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `/api/odcr/coverage` returns 401 | No forwarded user token (token store off, or ARM scope missing) | Re-apply Step 6; sign out/in |
+| `/api/odcr/coverage` returns 401 | No forwarded user token (token store off, or ARM scope missing) | Re-deploy `infra/auth.bicep`; sign out/in |
 | Empty VM list for a user who has access | Admin consent not granted, or wrong login scope | Step 3 admin consent; verify `loginParameters` scope |
 | `X-MS-TOKEN-AAD-ACCESS-TOKEN` absent in `.auth/me` | `tokenStore.enabled` false | Set it true in `authsettingsV2` |
 | Forwarded token expired after ~1h | No `offline_access` / no refresh | Add `offline_access` to the scope; `tokenRefreshExtensionHours` set |

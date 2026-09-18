@@ -543,6 +543,192 @@ root._preferenceInitialization.then(() => {
         )
         self.assertEqual("not_required", result["owner"])
 
+    def test_initial_report_reconciles_unavailable_context_fields(self):
+        result = self.run_model_scenario("""
+const writes = [];
+const stored = JSON.stringify({
+  schemaVersion: 1,
+  globalScope: {
+    subscriptionIds: ["sub-1"],
+    locations: null,
+    contextFilters: [
+      { fieldKey: "deleted_field", values: ["Old"] },
+      { fieldKey: "environment", values: ["Removed value"] },
+    ],
+  },
+  coverageUnmarkedOwner: "required",
+});
+global.window = {
+  location: { hash: "#/odcr/coverage" },
+  addEventListener: () => {},
+  localStorage: {
+    getItem: (key) => key === "az-capacity.frontend-preferences.v1.local" ? stored : null,
+    setItem: (key, value) => writes.push(JSON.parse(value)),
+    removeItem: () => {},
+  },
+};
+global.fetch = async (url) => {
+  if (url === "/api/me") return {
+    ok: true,
+    json: async () => ({ local: true, capabilities: { useOdcr: true, administer: false } }),
+  };
+  if (url === "/api/global-filters/catalogue") return {
+    ok: true,
+    json: async () => ({
+      subscriptions: [], locations: [],
+      contextFields: [{ fieldKey: "environment", name: "Environment", values: [] }],
+    }),
+  };
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+global.setInterval = () => 0;
+global.resourceTypeIcon = () => "";
+global.useGenericResourceIcon = () => {};
+global.createNotificationsFeature = () => ({ notificationDrawerOpen: false, loadNotifications() {} });
+global.createAdministrationFeature = () => ({
+  loadSettings() {}, loadBusinessContextFields() {},
+});
+global.createDataCollectionFeature = () => ({ statuses: {}, loadPipelines() {} });
+global.createVmCoverageFeature = () => ({
+  vmsLoaded: false,
+  coverageUnmarkedOwner: "required",
+  loadVms() { this.reportCalls.push(this.globalScopeRequest()); },
+});
+global.createVmCoverageChartsFeature = () => ({ resizeCoverageReportCharts() {} });
+global.createCoverageEditorFeature = () => ({});
+global.createOdcrUsageFeature = () => ({
+  odcrUsageLoaded: false, loadOdcrUsage() {}, scheduleOdcrUsageChartRender() {},
+});
+
+const root = app();
+root.reportCalls = [];
+root.init();
+root._preferenceInitialization.then(() => {
+  console.log(JSON.stringify({
+    reportCalls: root.reportCalls,
+    persistedScope: writes[0].globalScope,
+    notifications: root.toasts.map((toast) => toast.message),
+  }));
+});
+""", scripts=[
+            "js/shared/preference-store.js",
+            "js/shared/http.js",
+            "js/features/scope.js",
+            "app.js",
+        ])
+
+        expected_scope = {
+            "subscriptionIds": ["sub-1"],
+            "locations": None,
+            "contextFilters": [
+                {"fieldKey": "environment", "values": ["Removed value"]},
+            ],
+        }
+        self.assertEqual([{"subscriptionIds": ["sub-1"], "contextFilters": expected_scope["contextFilters"]}], result["reportCalls"])
+        self.assertEqual(expected_scope, result["persistedScope"])
+        self.assertEqual(
+            ["Removed unavailable global Context filter: deleted_field."],
+            result["notifications"],
+        )
+
+    def test_catalogue_failure_preserves_restored_context_filters(self):
+        result = self.run_model_scenario("""
+const stored = JSON.stringify({
+  schemaVersion: 1,
+  globalScope: {
+    subscriptionIds: null, locations: null,
+    contextFilters: [{ fieldKey: "deleted_field", values: ["Old"] }],
+  },
+  coverageUnmarkedOwner: "required",
+});
+global.window = {
+  location: { hash: "#/odcr/coverage" },
+  addEventListener: () => {},
+  localStorage: {
+    getItem: (key) => key === "az-capacity.frontend-preferences.v1.local" ? stored : null,
+    setItem: () => { throw new Error("Preference must not be rewritten"); },
+    removeItem: () => {},
+  },
+};
+global.fetch = async (url) => {
+  if (url === "/api/me") return {
+    ok: true,
+    json: async () => ({ local: true, capabilities: { useOdcr: true, administer: false } }),
+  };
+  if (url === "/api/global-filters/catalogue") throw new Error("Catalogue unavailable");
+  throw new Error(`Unexpected fetch: ${url}`);
+};
+global.setInterval = () => 0;
+global.resourceTypeIcon = () => "";
+global.useGenericResourceIcon = () => {};
+global.createNotificationsFeature = () => ({ notificationDrawerOpen: false, loadNotifications() {} });
+global.createAdministrationFeature = () => ({
+  loadSettings() {}, loadBusinessContextFields() {},
+});
+global.createDataCollectionFeature = () => ({ statuses: {}, loadPipelines() {} });
+global.createVmCoverageFeature = () => ({
+  vmsLoaded: false,
+  coverageUnmarkedOwner: "required",
+  loadVms() { this.reportCalls.push(this.globalScopeRequest()); },
+});
+global.createVmCoverageChartsFeature = () => ({ resizeCoverageReportCharts() {} });
+global.createCoverageEditorFeature = () => ({});
+global.createOdcrUsageFeature = () => ({
+  odcrUsageLoaded: false, loadOdcrUsage() {}, scheduleOdcrUsageChartRender() {},
+});
+
+const root = app();
+root.reportCalls = [];
+root.init();
+root._preferenceInitialization.then(() => console.log(JSON.stringify({
+  reportCalls: root.reportCalls,
+  scopeInventoryError: root.scopeInventoryError,
+})));
+""", scripts=[
+            "js/shared/preference-store.js",
+            "js/shared/http.js",
+            "js/features/scope.js",
+            "app.js",
+        ])
+
+        self.assertEqual(
+            [{"contextFilters": [{"fieldKey": "deleted_field", "values": ["Old"]}]}],
+            result["reportCalls"],
+        )
+        self.assertEqual("Catalogue unavailable", result["scopeInventoryError"])
+
+    def test_remove_all_global_filters_persists_and_reloads_active_report(self):
+        result = self.run_model_scenario("""
+const feature = createScopeFeature();
+feature.globalScope = {
+  subscriptionIds: ["sub-1"], locations: ["westeurope"],
+  contextFilters: [{ fieldKey: "environment", values: ["Production"] }],
+};
+feature.globalScopeDraft = JSON.parse(JSON.stringify(feature.globalScope));
+feature.scopeMenuOpen = true;
+feature.odcrTab = "usage";
+feature.vmsLoaded = true;
+feature.persisted = [];
+feature.persistGlobalScope = (scope) => feature.persisted.push(JSON.parse(JSON.stringify(scope)));
+feature.loadOdcrUsage = async (force) => { feature.reloadForce = force; };
+feature.removeAllGlobalScope().then(() => console.log(JSON.stringify({
+  scope: feature.globalScope,
+  draft: feature.globalScopeDraft,
+  persisted: feature.persisted,
+  scopeMenuOpen: feature.scopeMenuOpen,
+  vmsLoaded: feature.vmsLoaded,
+  reloadForce: feature.reloadForce,
+})));
+""", scripts=["js/shared/http.js", "js/features/scope.js"])
+
+        unrestricted = {"subscriptionIds": None, "locations": None, "contextFilters": []}
+        self.assertEqual(unrestricted, result["scope"])
+        self.assertEqual(unrestricted, result["draft"])
+        self.assertEqual([unrestricted], result["persisted"])
+        self.assertFalse(result["scopeMenuOpen"])
+        self.assertFalse(result["vmsLoaded"])
+        self.assertTrue(result["reloadForce"])
+
     def test_facets_or_within_and_across(self):
         result = self.run_model_scenario("""
 const model = createReportModel({ facetMatchers: {

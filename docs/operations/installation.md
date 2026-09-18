@@ -3,8 +3,7 @@
 ## Purpose
 
 This runbook installs a new Azure Capacity instance from a prebuilt release ZIP
-stored in a private GitHub repository. No knowledge of the application source
-code and no local build are required.
+stored in a private GitHub repository.
 
 The installation deliberately separates responsibilities:
 
@@ -23,9 +22,8 @@ resources.
 Collect the following before starting:
 
 - An Azure subscription and an existing or new resource group.
-- A management group containing every subscription the backend must collect.
 - A globally unique lowercase name prefix, 3 to 17 characters long.
-- The application scope: subscription IDs or management group IDs, plus optional
+- The application scope you want the application to work on, it can be : all accessible to the application identity, or a subscription ID list or a management group IDs list, plus optional
   Azure location filters.
 - The cost-management method and agreement details described in
   [Environment variables](environment-variables.md).
@@ -111,10 +109,7 @@ az role assignment create `
 ```
 
 Assign at individual descendant subscriptions instead when the identity must not
-read the entire management group. In `per-billing` cost mode, arrange the
-separate billing-account or billing-profile authorization described in
-[Authorization](../specs/authorization.md); the custom role covers `per-sub`
-queries only.
+read the entire management group.
 
 ## 5. Configure Entra and Easy Auth
 
@@ -126,7 +121,7 @@ Send the Entra administrator these non-secret values:
 - User-assigned managed identity principal/object ID:
   `$ManagedIdentityPrincipalId`
 
-The Entra administrator completes Steps 1 through 5 of
+The Entra administrator completes
 [Easy Auth setup](easy-auth-setup.md), then returns the Application (client) ID
 and tenant ID to the Azure operator.
 
@@ -144,33 +139,29 @@ az deployment group create `
 This template configures only the Function App's `authsettingsV2`. It does not
 create or modify the Entra app registration.
 
-After that deployment succeeds, the Entra administrator completes Step 7 of the
-Easy Auth procedure and assigns at least one pilot `Admin`. Do not enable
-**Assignment required** until that pilot administrator has successfully signed
-in during verification.
-
 ## 6. Deploy the application ZIP
 
 Follow the **Deploy** section of
 [Function Package Build and Deployment](function-package-deployment.md). Use the
-ZIP downloaded in Step 2 and keep remote build disabled. To work entirely in the
-Azure portal, upload the ZIP into Azure Cloud Shell and run the documented Flex
-Consumption deployment command there. The linked procedure also shows how to
-run the same command from the Azure operator's workstation.
+ZIP downloaded in Step 2 and keep remote build disabled.
 
 ## 7. Verify the installation
 
 1. Restart the Function App in the Azure portal.
-2. Browse to `https://<function-app-name>.azurewebsites.net`. Confirm that Entra
-   sign-in occurs before the application opens.
-3. Complete Step 8 of [Easy Auth setup](easy-auth-setup.md) with pilot `User` and
-   `Admin` accounts.
-4. In the Azure portal, open the Function App's **Log stream** and confirm startup
-   completes without storage, identity, or package-import errors.
-5. Verify that the configured subscriptions and locations appear in Settings and
-   that an administrator can start a collection.
-6. After the pilot administrator is proven, the Entra administrator may enable
-   **Assignment required** and assign the remaining users or groups.
+2. Browse to `https://<function-app-name>.azurewebsites.net` and sign in with the
+   administrator account assigned the `Admin` role. Confirm the application opens
+   and the account menu shows the signed-in administrator.
+3. From the account menu, select **Log Out**. Confirm the session ends and the
+   application requires Entra sign-in again.
+4. Sign back in with the same administrator account.
+5. Open **Settings → Data Collection**. Start the initial collection for each
+   enabled data source and wait for it to complete. Confirm the status and last
+   update information show successful collection for the configured scope.
+6. Open **ODCR Coverage** and **ODCR Usage** and confirm both reports load.
+
+> ODCR reports inherit the Azure scope visible to the signed-in user. The listed
+> resources should therefore be limited to resources that the administrator can
+> see in Azure.
 
 The installation is complete when authentication and role checks pass, the app
 scope is correct, and a collection can access the intended Azure subscriptions.

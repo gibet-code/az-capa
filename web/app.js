@@ -52,6 +52,9 @@ function app() {
       await this.fetchUser();
       this.identityResolved = true;
       this.initializePreferences(this.user);
+      if (this.user.capabilities.useOdcr && this.globalScope.contextFilters.length) {
+        await this.loadScopeInventory({ reconcileContextFilters: true });
+      }
       this.applyRoute();
     },
 

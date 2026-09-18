@@ -113,6 +113,7 @@ body {
 .scope-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; color: var(--err); font-size: 12px; }
 .scope-error span { min-width: 0; overflow-wrap: anywhere; }
 .scope-menu-actions { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); }
+.scope-remove-all { margin-left: auto; }
 .notification-count { position: absolute; top: 5px; right: 5px; min-width: 16px; height: 16px; padding: 0 4px; border: 2px solid #1769aa; border-radius: 8px; background: #d83b01; color: #fff; font-size: 9px; font-weight: 700; line-height: 12px; }
 .account { position: relative; }
 .account-trigger { height: 48px; max-width: 300px; display: flex; align-items: center; gap: 9px; padding: 0 12px 0 10px; border: 0; background: transparent; color: #fff; cursor: pointer; text-align: left; }

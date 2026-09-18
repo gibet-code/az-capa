@@ -140,6 +140,8 @@
               <button type="button" class="btn" @click="applyGlobalScope()"
                 :disabled="!scopeInventoryLoaded || scopeInventoryLoading || !globalScopeDraftValid">Save</button>
               <button type="button" class="btn ghost" @click="closeScopeMenu()">Cancel</button>
+              <button type="button" class="btn danger scope-remove-all" @click="removeAllGlobalScope()"
+                :disabled="!globalScopeActive">Remove all</button>
             </div>
           </div>
         </div>
@@ -1484,6 +1486,11 @@
         </div>
       </template>
 
+      <footer class="app-disclaimer" role="note">
+        <strong>Disclaimer:</strong> Although Azure Capacity is developed by Microsoft employees, it is not a Microsoft
+        service or product. Azure Capacity is an independently driven project. There are no implicit or explicit
+        obligations related to this project; it is provided &quot;as is,&quot; with no warranties, and confers no rights.
+      </footer>
     </main>
 
     <template x-if="dcDetailsOpen">
