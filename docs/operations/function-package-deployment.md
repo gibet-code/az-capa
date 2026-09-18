@@ -29,21 +29,6 @@ order:
 2. The existing `PIP_INDEX_URL` environment variable.
 3. `https://pypi.org/simple`.
 
-On Microsoft-managed devices, direct PyPI access is blocked. Select the Central
-Feed Services (CFS) proxy explicitly:
-
-```powershell
-.\build-function-package.ps1 `
-  -PackageIndexUrl https://packagefeedproxy.microsoft.io/pypi/simple
-```
-
-Alternatively, configure it for the current shell:
-
-```powershell
-$env:PIP_INDEX_URL = 'https://packagefeedproxy.microsoft.io/pypi/simple'
-.\build-function-package.ps1
-```
-
 Python, Node.js, pytest, Azure CLI, and Azure Functions Core Tools do not need to
 be installed on the laptop to build the package.
 
