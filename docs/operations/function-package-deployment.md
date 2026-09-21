@@ -88,7 +88,7 @@ before creating the ZIP.
 Use the ZIP produced by the build or manually downloaded from the private GitHub
 release. Do not extract or modify it.
 
-### Azure portal (Cloud Shell)
+### Azure portal (Cloud Shell, public profile only)
 
 1. In the Azure portal, select the **Cloud Shell** button and choose PowerShell.
 2. In the Cloud Shell toolbar, select **Manage files** → **Upload**, then upload
@@ -105,9 +105,9 @@ az functionapp deployment source config-zip `
 
 The Azure portal does not currently provide a documented Deployment Center
 button for uploading a local ZIP to a Flex Consumption app. Cloud Shell keeps
-the entire deployment workflow in the portal while using the supported One
-Deploy command. Wait for it to report success and do not browse to the app until
-Easy Auth has also been configured.
+the public-profile workflow in the portal while using the supported One Deploy
+command. Wait for it to report success and do not browse to the app until Easy
+Auth has also been configured.
 
 ### Azure CLI fallback
 
@@ -121,6 +121,11 @@ az functionapp deployment source config-zip `
 
 Wait for the command to succeed. Then restart the Function App from its
 **Overview** page and continue with the verification in the installation guide.
+
+For the `Private` connectivity profile, run the command from a workstation or
+self-hosted agent with network access to the private endpoint and private DNS
+resolution for both the app and SCM hostnames. Azure Cloud Shell does not run in
+your VNet and cannot normally reach that private SCM endpoint.
 
 The target Function subnet does not need access to PyPI or Oryx for this
 artifact. Application runtime and Functions extension bundle network

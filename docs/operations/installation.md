@@ -66,8 +66,20 @@ they do not match.
 ## 3. Deploy the Azure infrastructure
 
 Copy `infra/main.bicepparam` to an environment-specific parameter file and set at
-least `namePrefix`, `scope`, `costManagement`, and `storageConnectivity`. Do not
+least `namePrefix`, `scope`, `costManagement`, and `connectivityProfile`. Do not
 add Entra application IDs: Easy Auth is a separate deployment phase.
+
+`connectivityProfile` defaults to `Private`. With `networkDeployment = 'Create'`,
+the template creates the VNet, a delegated Function integration subnet, and a
+separate private endpoint subnet. With `networkDeployment = 'Existing'`, supply
+all IDs in `existingNetwork`; the Function subnet must be dedicated, at least
+`/27`, delegated to `Microsoft.App/environments`, and different from the private
+endpoint subnet.
+
+For private DNS, use `Deploy`, `Existing`, or `PolicyManaged`. Existing zones
+must already be linked to the VNet. In policy-managed environments, policy must
+create the endpoint DNS zone groups and records for the Function App and Blob,
+Queue, and Table storage endpoints.
 
 Keep the copied file next to `infra/main.bicep` unless you also update its
 relative `using` path. Bicep parameter files do not accept an absolute Windows
@@ -99,6 +111,9 @@ $Deployment | Format-List
 
 Record all three output values. The Entra administrator needs the Function App
 name and managed-identity details for authentication setup.
+
+Alternatively, use the **Deploy to Azure** button in the repository README. Its
+wizard covers the same application, data-scope, and networking parameters.
 
 ## 4. Create and assign the custom Azure role
 

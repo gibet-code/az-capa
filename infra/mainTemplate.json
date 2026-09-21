@@ -1,0 +1,855 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "languageVersion": "2.0",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.36.177.2456",
+      "templateHash": "17511786932881313080"
+    }
+  },
+  "definitions": {
+    "scopeConfig": {
+      "type": "object",
+      "properties": {
+        "subscriptionIds": {
+          "type": "string",
+          "metadata": {
+            "description": "Comma-separated subscription IDs, or empty to discover subscriptions visible to the app identity."
+          }
+        },
+        "managementGroupIds": {
+          "type": "string",
+          "metadata": {
+            "description": "Comma-separated management group IDs (mutually exclusive with subscriptionIds)."
+          }
+        },
+        "locations": {
+          "type": "string",
+          "metadata": {
+            "description": "Comma-separated meter/location filter; empty for all locations."
+          }
+        }
+      },
+      "metadata": {
+        "description": "Global scoping. Subscription IDs and management group IDs are mutually exclusive; leave both empty to discover subscriptions visible to the app identity."
+      }
+    },
+    "costManagementConfig": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "allowedValues": [
+            "per-billing",
+            "per-sub"
+          ],
+          "metadata": {
+            "description": "per-sub queries each subscription; per-billing queries the billing profile."
+          }
+        },
+        "agreementType": {
+          "type": "string",
+          "allowedValues": [
+            "ea",
+            "mca"
+          ],
+          "metadata": {
+            "description": "EA needs two queries (hours + cost); MCA needs one."
+          }
+        },
+        "billingAccountId": {
+          "type": "string",
+          "metadata": {
+            "description": "Billing account ID (required for per-billing)."
+          }
+        },
+        "billingProfileId": {
+          "type": "string",
+          "metadata": {
+            "description": "Billing profile ID (MCA per-billing)."
+          }
+        }
+      },
+      "metadata": {
+        "description": "Cost Management retrieval configuration, shared by every Cost Management consumer."
+      }
+    },
+    "deploymentOutputs": {
+      "type": "object",
+      "properties": {
+        "functionAppName": {
+          "type": "string"
+        },
+        "functionAppHostName": {
+          "type": "string"
+        },
+        "managedIdentityPrincipalId": {
+          "type": "string",
+          "metadata": {
+            "description": "Managed identity principal ID — assign Azure Capacity Backend Reader on the target scope."
+          }
+        },
+        "managedIdentityClientId": {
+          "type": "string"
+        },
+        "nextSteps": {
+          "type": "string",
+          "metadata": {
+            "description": "Post-deployment instructions."
+          }
+        }
+      },
+      "metadata": {
+        "description": "Outputs describing the deployed app."
+      }
+    },
+    "existingNetworkConfig": {
+      "type": "object",
+      "properties": {
+        "vnetResourceId": {
+          "type": "string",
+          "metadata": {
+            "description": "Resource ID of the VNet containing both subnets."
+          }
+        },
+        "functionIntegrationSubnetResourceId": {
+          "type": "string",
+          "metadata": {
+            "description": "Resource ID of a dedicated subnet delegated to Microsoft.App/environments."
+          }
+        },
+        "privateEndpointSubnetResourceId": {
+          "type": "string",
+          "metadata": {
+            "description": "Resource ID of the subnet used by Function App and storage private endpoints."
+          }
+        }
+      },
+      "metadata": {
+        "description": "Existing network resources used by the Private profile when networkDeployment is Existing."
+      }
+    },
+    "existingPrivateDnsZoneConfig": {
+      "type": "object",
+      "properties": {
+        "functionApp": {
+          "type": "string"
+        },
+        "blob": {
+          "type": "string"
+        },
+        "queue": {
+          "type": "string"
+        },
+        "table": {
+          "type": "string"
+        }
+      },
+      "metadata": {
+        "description": "Existing private DNS zones used when privateDnsManagement is Existing."
+      }
+    }
+  },
+  "parameters": {
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "azcapacity",
+      "minLength": 3,
+      "maxLength": 17,
+      "metadata": {
+        "description": "Prefix for resource names; also the default Function App name stem. Lowercase letters/numbers."
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for all resources. Defaults to the resource group location."
+      }
+    },
+    "scope": {
+      "$ref": "#/definitions/scopeConfig",
+      "defaultValue": {
+        "subscriptionIds": "",
+        "managementGroupIds": "",
+        "locations": ""
+      }
+    },
+    "costManagement": {
+      "$ref": "#/definitions/costManagementConfig",
+      "defaultValue": {
+        "method": "per-sub",
+        "agreementType": "ea",
+        "billingAccountId": "",
+        "billingProfileId": ""
+      }
+    },
+    "deployApplicationInsights": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy Application Insights + Log Analytics for observability."
+      }
+    },
+    "connectivityProfile": {
+      "type": "string",
+      "defaultValue": "Private",
+      "allowedValues": [
+        "Public",
+        "Private"
+      ],
+      "metadata": {
+        "description": "Public exposes the authenticated app and storage endpoints publicly. Private disables public access, adds a Function private endpoint, and reaches storage through private endpoints over VNet integration."
+      }
+    },
+    "networkDeployment": {
+      "type": "string",
+      "defaultValue": "Create",
+      "allowedValues": [
+        "Create",
+        "Existing"
+      ],
+      "metadata": {
+        "description": "For the Private profile, create a VNet and subnets or use existing network resources."
+      }
+    },
+    "vnetAddressPrefix": {
+      "type": "string",
+      "defaultValue": "10.100.0.0/24",
+      "metadata": {
+        "description": "Address space for a VNet created for the Private profile. Two /26 subnets are carved out."
+      }
+    },
+    "existingNetwork": {
+      "$ref": "#/definitions/existingNetworkConfig",
+      "defaultValue": {
+        "vnetResourceId": "",
+        "functionIntegrationSubnetResourceId": "",
+        "privateEndpointSubnetResourceId": ""
+      }
+    },
+    "privateDnsManagement": {
+      "type": "string",
+      "defaultValue": "Deploy",
+      "allowedValues": [
+        "Deploy",
+        "Existing",
+        "PolicyManaged"
+      ],
+      "metadata": {
+        "description": "For the Private profile, deploy private DNS zones, attach endpoints to existing zones, or let Azure Policy manage endpoint DNS zone groups."
+      }
+    },
+    "existingPrivateDnsZones": {
+      "$ref": "#/definitions/existingPrivateDnsZoneConfig",
+      "defaultValue": {
+        "functionApp": "",
+        "blob": "",
+        "queue": "",
+        "table": ""
+      }
+    }
+  },
+  "variables": {
+    "usePrivateConnectivity": "[equals(parameters('connectivityProfile'), 'Private')]",
+    "createNetwork": "[and(variables('usePrivateConnectivity'), equals(parameters('networkDeployment'), 'Create'))]",
+    "deployPrivateDns": "[and(variables('usePrivateConnectivity'), equals(parameters('privateDnsManagement'), 'Deploy'))]",
+    "configurePrivateDnsZoneGroups": "[and(variables('usePrivateConnectivity'), not(equals(parameters('privateDnsManagement'), 'PolicyManaged')))]",
+    "vnetName": "[format('{0}-vnet', toLower(parameters('namePrefix')))]",
+    "appSubnetName": "functionapp",
+    "storagePublicNetworkAccess": "[if(variables('usePrivateConnectivity'), 'Disabled', 'Enabled')]",
+    "storageNetworkAcls": "[if(variables('usePrivateConnectivity'), createObject('bypass', 'AzureServices', 'defaultAction', 'Deny'), createObject('bypass', 'AzureServices', 'defaultAction', 'Allow'))]",
+    "privateDnsZoneServices": [
+      "blob",
+      "queue",
+      "table"
+    ],
+    "privateDnsZoneNames": "[concat(createArray('privatelink.azurewebsites.net'), map(variables('privateDnsZoneServices'), lambda('service', format('privatelink.{0}.{1}', lambdaVariables('service'), variables('storageSuffix')))))]",
+    "selectedVnetResourceId": "[if(variables('createNetwork'), resourceId('Microsoft.Network/virtualNetworks', variables('vnetName')), parameters('existingNetwork').vnetResourceId)]",
+    "selectedFunctionSubnetResourceId": "[if(variables('createNetwork'), resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('appSubnetName')), parameters('existingNetwork').functionIntegrationSubnetResourceId)]",
+    "selectedPrivateEndpointSubnetResourceId": "[if(variables('createNetwork'), resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), 'private-endpoints'), parameters('existingNetwork').privateEndpointSubnetResourceId)]",
+    "selectedPrivateDnsZoneIds": "[if(equals(parameters('privateDnsManagement'), 'Deploy'), createObject('functionApp', resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net'), 'blob', resourceId('Microsoft.Network/privateDnsZones', format('privatelink.blob.{0}', variables('storageSuffix'))), 'queue', resourceId('Microsoft.Network/privateDnsZones', format('privatelink.queue.{0}', variables('storageSuffix'))), 'table', resourceId('Microsoft.Network/privateDnsZones', format('privatelink.table.{0}', variables('storageSuffix')))), parameters('existingPrivateDnsZones'))]",
+    "privateEndpointConfigs": [
+      {
+        "key": "app-blob",
+        "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('appStorageName'))]",
+        "service": "blob"
+      },
+      {
+        "key": "app-table",
+        "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('appStorageName'))]",
+        "service": "table"
+      },
+      {
+        "key": "durable-blob",
+        "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('durableStorageName'))]",
+        "service": "blob"
+      },
+      {
+        "key": "durable-queue",
+        "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('durableStorageName'))]",
+        "service": "queue"
+      },
+      {
+        "key": "durable-table",
+        "storageId": "[resourceId('Microsoft.Storage/storageAccounts', variables('durableStorageName'))]",
+        "service": "table"
+      }
+    ],
+    "uniqueSuffix": "[uniqueString(resourceGroup().id, parameters('namePrefix'))]",
+    "sanitizedPrefix": "[replace(replace(toLower(parameters('namePrefix')), '-', ''), '_', '')]",
+    "appStorageName": "[format('{0}{1}', take(variables('sanitizedPrefix'), sub(24, length(variables('uniqueSuffix')))), variables('uniqueSuffix'))]",
+    "durableStorageName": "[format('{0}df{1}', take(variables('sanitizedPrefix'), sub(22, length(variables('uniqueSuffix')))), variables('uniqueSuffix'))]",
+    "functionAppName": "[format('{0}-{1}', toLower(parameters('namePrefix')), variables('uniqueSuffix'))]",
+    "deploymentContainerName": "app-package",
+    "zoneMappingsContainerName": "zone-mappings",
+    "computeSkusContainerName": "compute-skus",
+    "azureReferenceDataContainerName": "azure-reference-data",
+    "subscriptionContextContainerName": "subscription-context",
+    "storageSuffix": "[environment().suffixes.storage]",
+    "appBlobUri": "[format('https://{0}.blob.{1}', variables('appStorageName'), variables('storageSuffix'))]",
+    "appQueueUri": "[format('https://{0}.queue.{1}', variables('appStorageName'), variables('storageSuffix'))]",
+    "appTableUri": "[format('https://{0}.table.{1}', variables('appStorageName'), variables('storageSuffix'))]",
+    "durableBlobUri": "[format('https://{0}.blob.{1}', variables('durableStorageName'), variables('storageSuffix'))]",
+    "durableQueueUri": "[format('https://{0}.queue.{1}', variables('durableStorageName'), variables('storageSuffix'))]",
+    "durableTableUri": "[format('https://{0}.table.{1}', variables('durableStorageName'), variables('storageSuffix'))]",
+    "roleBlobDataContributor": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "roleQueueDataContributor": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
+    "roleTableDataContributor": "0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3",
+    "roleMonitoringMetricsPublisher": "3913510d-42f4-4e42-8a64-420c390055eb"
+  },
+  "resources": {
+    "vnet": {
+      "condition": "[variables('createNetwork')]",
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "[parameters('vnetAddressPrefix')]"
+          ]
+        }
+      }
+    },
+    "networkSecurityGroup": {
+      "condition": "[variables('createNetwork')]",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-nsg', toLower(parameters('namePrefix')))]",
+      "location": "[parameters('location')]"
+    },
+    "appSubnet": {
+      "condition": "[variables('createNetwork')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('vnetName'), variables('appSubnetName'))]",
+      "properties": {
+        "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 26, 0)]",
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', toLower(parameters('namePrefix'))))]"
+        },
+        "delegations": [
+          {
+            "name": "flex",
+            "properties": {
+              "serviceName": "Microsoft.App/environments"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "networkSecurityGroup",
+        "vnet"
+      ]
+    },
+    "privateEndpointSubnet": {
+      "condition": "[variables('createNetwork')]",
+      "type": "Microsoft.Network/virtualNetworks/subnets",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', variables('vnetName'), 'private-endpoints')]",
+      "properties": {
+        "addressPrefix": "[cidrSubnet(parameters('vnetAddressPrefix'), 26, 1)]",
+        "networkSecurityGroup": {
+          "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('{0}-nsg', toLower(parameters('namePrefix'))))]"
+        }
+      },
+      "dependsOn": [
+        "appSubnet",
+        "networkSecurityGroup",
+        "vnet"
+      ]
+    },
+    "privateDnsZone": {
+      "copy": {
+        "name": "privateDnsZone",
+        "count": "[length(variables('privateDnsZoneNames'))]"
+      },
+      "condition": "[variables('deployPrivateDns')]",
+      "type": "Microsoft.Network/privateDnsZones",
+      "apiVersion": "2020-06-01",
+      "name": "[variables('privateDnsZoneNames')[copyIndex()]]",
+      "location": "global"
+    },
+    "privateDnsZoneLink": {
+      "copy": {
+        "name": "privateDnsZoneLink",
+        "count": "[length(variables('privateDnsZoneNames'))]"
+      },
+      "condition": "[variables('deployPrivateDns')]",
+      "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+      "apiVersion": "2020-06-01",
+      "name": "[format('{0}/{1}', variables('privateDnsZoneNames')[copyIndex()], 'link')]",
+      "location": "global",
+      "properties": {
+        "registrationEnabled": false,
+        "virtualNetwork": {
+          "id": "[variables('selectedVnetResourceId')]"
+        }
+      },
+      "dependsOn": [
+        "[format('privateDnsZone[{0}]', copyIndex())]",
+        "vnet"
+      ]
+    },
+    "storagePrivateEndpoint": {
+      "copy": {
+        "name": "storagePrivateEndpoint",
+        "count": "[length(variables('privateEndpointConfigs'))]"
+      },
+      "condition": "[variables('usePrivateConnectivity')]",
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-pe-{1}', toLower(parameters('namePrefix')), variables('privateEndpointConfigs')[copyIndex()].key)]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[variables('selectedPrivateEndpointSubnetResourceId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "[variables('privateEndpointConfigs')[copyIndex()].key]",
+            "properties": {
+              "privateLinkServiceId": "[variables('privateEndpointConfigs')[copyIndex()].storageId]",
+              "groupIds": [
+                "[variables('privateEndpointConfigs')[copyIndex()].service]"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "appStorageAccount",
+        "durableStorageAccount",
+        "privateEndpointSubnet"
+      ]
+    },
+    "storagePrivateEndpointDnsGroup": {
+      "copy": {
+        "name": "storagePrivateEndpointDnsGroup",
+        "count": "[length(variables('privateEndpointConfigs'))]"
+      },
+      "condition": "[variables('configurePrivateDnsZoneGroups')]",
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', format('{0}-pe-{1}', toLower(parameters('namePrefix')), variables('privateEndpointConfigs')[copyIndex()].key), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "[variables('privateEndpointConfigs')[copyIndex()].service]",
+            "properties": {
+              "privateDnsZoneId": "[variables('selectedPrivateDnsZoneIds')[variables('privateEndpointConfigs')[copyIndex()].service]]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "appStorageAccount",
+        "durableStorageAccount",
+        "privateDnsZone",
+        "[format('storagePrivateEndpoint[{0}]', copyIndex())]"
+      ]
+    },
+    "appStorageAccount": {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('appStorageName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "allowCrossTenantReplication": false,
+        "isHnsEnabled": false,
+        "encryption": {
+          "keySource": "Microsoft.Storage",
+          "requireInfrastructureEncryption": true
+        },
+        "publicNetworkAccess": "[variables('storagePublicNetworkAccess')]",
+        "networkAcls": "[variables('storageNetworkAcls')]"
+      }
+    },
+    "durableStorageAccount": {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('durableStorageName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "supportsHttpsTrafficOnly": true,
+        "allowBlobPublicAccess": false,
+        "allowSharedKeyAccess": false,
+        "allowCrossTenantReplication": false,
+        "isHnsEnabled": false,
+        "encryption": {
+          "keySource": "Microsoft.Storage",
+          "requireInfrastructureEncryption": true
+        },
+        "publicNetworkAccess": "[variables('storagePublicNetworkAccess')]",
+        "networkAcls": "[variables('storageNetworkAcls')]"
+      }
+    },
+    "blobService": {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', variables('appStorageName'), 'default')]",
+      "dependsOn": [
+        "appStorageAccount"
+      ]
+    },
+    "deploymentContainer": {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('appStorageName'), 'default', variables('deploymentContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "blobService"
+      ]
+    },
+    "zoneMappingsContainer": {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('appStorageName'), 'default', variables('zoneMappingsContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "blobService"
+      ]
+    },
+    "computeSkusContainer": {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('appStorageName'), 'default', variables('computeSkusContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "blobService"
+      ]
+    },
+    "azureReferenceDataContainer": {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('appStorageName'), 'default', variables('azureReferenceDataContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "blobService"
+      ]
+    },
+    "subscriptionContextContainer": {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}/{2}', variables('appStorageName'), 'default', variables('subscriptionContextContainerName'))]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "blobService"
+      ]
+    },
+    "managedIdentity": {
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "apiVersion": "2023-01-31",
+      "name": "[format('{0}-mi', toLower(parameters('namePrefix')))]",
+      "location": "[parameters('location')]"
+    },
+    "appBlobContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('appStorageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('appStorageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))), variables('roleBlobDataContributor'))]",
+      "properties": {
+        "principalId": "[reference('managedIdentity').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleBlobDataContributor'))]"
+      },
+      "dependsOn": [
+        "appStorageAccount",
+        "managedIdentity"
+      ]
+    },
+    "appTableContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('appStorageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('appStorageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))), variables('roleTableDataContributor'))]",
+      "properties": {
+        "principalId": "[reference('managedIdentity').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleTableDataContributor'))]"
+      },
+      "dependsOn": [
+        "appStorageAccount",
+        "managedIdentity"
+      ]
+    },
+    "durableBlobContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('durableStorageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('durableStorageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))), variables('roleBlobDataContributor'))]",
+      "properties": {
+        "principalId": "[reference('managedIdentity').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleBlobDataContributor'))]"
+      },
+      "dependsOn": [
+        "durableStorageAccount",
+        "managedIdentity"
+      ]
+    },
+    "durableQueueContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('durableStorageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('durableStorageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))), variables('roleQueueDataContributor'))]",
+      "properties": {
+        "principalId": "[reference('managedIdentity').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleQueueDataContributor'))]"
+      },
+      "dependsOn": [
+        "durableStorageAccount",
+        "managedIdentity"
+      ]
+    },
+    "durableTableContributor": {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}', variables('durableStorageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('durableStorageName')), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))), variables('roleTableDataContributor'))]",
+      "properties": {
+        "principalId": "[reference('managedIdentity').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleTableDataContributor'))]"
+      },
+      "dependsOn": [
+        "durableStorageAccount",
+        "managedIdentity"
+      ]
+    },
+    "logAnalytics": {
+      "condition": "[parameters('deployApplicationInsights')]",
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2023-09-01",
+      "name": "[format('{0}-law', toLower(parameters('namePrefix')))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        }
+      }
+    },
+    "applicationInsights": {
+      "condition": "[parameters('deployApplicationInsights')]",
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[format('{0}-ai', toLower(parameters('namePrefix')))]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-law', toLower(parameters('namePrefix'))))]",
+        "DisableLocalAuth": true
+      },
+      "dependsOn": [
+        "logAnalytics"
+      ]
+    },
+    "appInsightsMetricsPublisher": {
+      "condition": "[parameters('deployApplicationInsights')]",
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Insights/components/{0}', format('{0}-ai', toLower(parameters('namePrefix'))))]",
+      "name": "[guid(resourceId('Microsoft.Insights/components', format('{0}-ai', toLower(parameters('namePrefix')))), resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))), variables('roleMonitoringMetricsPublisher'))]",
+      "properties": {
+        "principalId": "[reference('managedIdentity').principalId]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('roleMonitoringMetricsPublisher'))]"
+      },
+      "dependsOn": [
+        "applicationInsights",
+        "managedIdentity"
+      ]
+    },
+    "hostingPlan": {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2024-04-01",
+      "name": "[format('{0}-plan', toLower(parameters('namePrefix')))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "FC1",
+        "tier": "FlexConsumption"
+      },
+      "kind": "functionapp",
+      "properties": {
+        "reserved": true
+      }
+    },
+    "functionApp": {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2024-04-01",
+      "name": "[variables('functionAppName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[format('{0}', resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix')))))]": {}
+        }
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', format('{0}-plan', toLower(parameters('namePrefix'))))]",
+        "httpsOnly": true,
+        "publicNetworkAccess": "[if(variables('usePrivateConnectivity'), 'Disabled', 'Enabled')]",
+        "virtualNetworkSubnetId": "[if(variables('usePrivateConnectivity'), variables('selectedFunctionSubnetResourceId'), null())]",
+        "functionAppConfig": {
+          "deployment": {
+            "storage": {
+              "type": "blobContainer",
+              "value": "[format('{0}{1}', reference('appStorageAccount').primaryEndpoints.blob, variables('deploymentContainerName'))]",
+              "authentication": {
+                "type": "UserAssignedIdentity",
+                "userAssignedIdentityResourceId": "[resourceId('Microsoft.ManagedIdentity/userAssignedIdentities', format('{0}-mi', toLower(parameters('namePrefix'))))]"
+              }
+            }
+          },
+          "runtime": {
+            "name": "python",
+            "version": "3.12"
+          },
+          "scaleAndConcurrency": {
+            "alwaysReady": [
+              {
+                "name": "durable",
+                "instanceCount": 1
+              }
+            ],
+            "instanceMemoryMB": 2048,
+            "maximumInstanceCount": 40,
+            "triggers": {
+              "http": {
+                "perInstanceConcurrency": 16
+              }
+            }
+          }
+        },
+        "siteConfig": {
+          "appSettings": "[concat(createArray(createObject('name', 'AzureWebJobsStorage__accountName', 'value', variables('appStorageName')), createObject('name', 'AzureWebJobsStorage__credential', 'value', 'managedidentity'), createObject('name', 'AzureWebJobsStorage__clientId', 'value', reference('managedIdentity').clientId), createObject('name', 'AzureWebJobsStorage__blobServiceUri', 'value', variables('appBlobUri')), createObject('name', 'AzureWebJobsStorage__queueServiceUri', 'value', variables('appQueueUri')), createObject('name', 'AzureWebJobsStorage__tableServiceUri', 'value', variables('appTableUri')), createObject('name', 'AzureDurableFunctionStorage__accountName', 'value', variables('durableStorageName')), createObject('name', 'AzureDurableFunctionStorage__credential', 'value', 'managedidentity'), createObject('name', 'AzureDurableFunctionStorage__clientId', 'value', reference('managedIdentity').clientId), createObject('name', 'AzureDurableFunctionStorage__blobServiceUri', 'value', variables('durableBlobUri')), createObject('name', 'AzureDurableFunctionStorage__queueServiceUri', 'value', variables('durableQueueUri')), createObject('name', 'AzureDurableFunctionStorage__tableServiceUri', 'value', variables('durableTableUri')), createObject('name', 'AzureWebJobsDisableHomepage', 'value', 'true'), createObject('name', 'AZURE_CLIENT_ID', 'value', reference('managedIdentity').clientId), createObject('name', 'OVERRIDE_USE_MI_FIC_ASSERTION_CLIENTID', 'value', reference('managedIdentity').clientId), createObject('name', 'SCOPE_SUBSCRIPTION_IDS', 'value', parameters('scope').subscriptionIds), createObject('name', 'SCOPE_MANAGEMENT_GROUP_IDS', 'value', parameters('scope').managementGroupIds), createObject('name', 'SCOPE_LOCATIONS', 'value', parameters('scope').locations), createObject('name', 'COST_MANAGEMENT_METHOD', 'value', parameters('costManagement').method), createObject('name', 'COST_MANAGEMENT_AGREEMENT_TYPE', 'value', parameters('costManagement').agreementType), createObject('name', 'COST_MANAGEMENT_BILLING_ACCOUNT_ID', 'value', parameters('costManagement').billingAccountId), createObject('name', 'COST_MANAGEMENT_BILLING_PROFILE_ID', 'value', parameters('costManagement').billingProfileId), createObject('name', 'DATA_COLLECTION_DISPATCH_SCHEDULE', 'value', '0 */5 * * * *')), if(parameters('deployApplicationInsights'), createArray(createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', coalesce(tryGet(if(parameters('deployApplicationInsights'), reference('applicationInsights', '2020-02-02', 'full'), null()), 'properties', 'ConnectionString'), '')), createObject('name', 'APPLICATIONINSIGHTS_AUTHENTICATION_STRING', 'value', format('ClientId={0};Authorization=AAD', reference('managedIdentity').clientId))), createArray()))]"
+        }
+      },
+      "dependsOn": [
+        "appBlobContributor",
+        "applicationInsights",
+        "appStorageAccount",
+        "appSubnet",
+        "appTableContributor",
+        "computeSkusContainer",
+        "durableBlobContributor",
+        "durableQueueContributor",
+        "durableTableContributor",
+        "hostingPlan",
+        "managedIdentity",
+        "storagePrivateEndpoint",
+        "storagePrivateEndpointDnsGroup",
+        "zoneMappingsContainer"
+      ]
+    },
+    "functionPrivateEndpoint": {
+      "condition": "[variables('usePrivateConnectivity')]",
+      "type": "Microsoft.Network/privateEndpoints",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}-pe-function', toLower(parameters('namePrefix')))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "subnet": {
+          "id": "[variables('selectedPrivateEndpointSubnetResourceId')]"
+        },
+        "privateLinkServiceConnections": [
+          {
+            "name": "sites",
+            "properties": {
+              "privateLinkServiceId": "[resourceId('Microsoft.Web/sites', variables('functionAppName'))]",
+              "groupIds": [
+                "sites"
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "functionApp",
+        "privateEndpointSubnet"
+      ]
+    },
+    "functionPrivateEndpointDnsGroup": {
+      "condition": "[variables('configurePrivateDnsZoneGroups')]",
+      "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[format('{0}/{1}', format('{0}-pe-function', toLower(parameters('namePrefix'))), 'default')]",
+      "properties": {
+        "privateDnsZoneConfigs": [
+          {
+            "name": "sites",
+            "properties": {
+              "privateDnsZoneId": "[variables('selectedPrivateDnsZoneIds').functionApp]"
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "functionPrivateEndpoint",
+        "privateDnsZone"
+      ]
+    }
+  },
+  "outputs": {
+    "result": {
+      "$ref": "#/definitions/deploymentOutputs",
+      "value": {
+        "functionAppName": "[variables('functionAppName')]",
+        "functionAppHostName": "[reference('functionApp').defaultHostName]",
+        "managedIdentityPrincipalId": "[reference('managedIdentity').principalId]",
+        "managedIdentityClientId": "[reference('managedIdentity').clientId]",
+        "nextSteps": "Assign Azure Capacity Backend Reader to the managed identity, then complete the separate Easy Auth and code deployment procedures in docs/operations/installation.md."
+      }
+    }
+  }
+}

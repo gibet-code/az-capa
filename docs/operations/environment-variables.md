@@ -21,14 +21,16 @@ matches the code default.
 ### Deployment choices
 
 Use these rules when setting `scope`, `costManagement`, and
-`storageConnectivity` in `infra/main.bicepparam`:
+`connectivityProfile` in `infra/main.bicepparam`:
 
 | Choice | Values and requirements |
 |---|---|
 | Application scope | Set either comma-separated `subscriptionIds` or comma-separated `managementGroupIds`, never both. Leave both empty to discover every subscription visible to the application identity. `locations` is an optional comma-separated Azure location filter; leave it empty for all locations. |
 | Cost method | `per-sub` queries each resolved subscription and does not use billing IDs. `per-billing` queries at billing scope and requires `billingAccountId`. |
 | Agreement type | Use `ea` for an Enterprise Agreement or `mca` for a Microsoft Customer Agreement. MCA `per-billing` deployments also require `billingProfileId`. |
-| Storage connectivity | `Public` uses public storage endpoints. `ServiceEndpoint` creates a VNet and restricts storage to the injected Function App subnet. `PrivateEndpoint` disables storage public access and creates private endpoints and private DNS. |
+| Connectivity profile | `Public` enables public Function and storage endpoints. `Private` disables public access, VNet-integrates Function egress, and creates Function and storage private endpoints. |
+| Network deployment | For `Private`, `Create` provisions a VNet and two subnets; `Existing` uses the resource IDs in `existingNetwork`. |
+| Private DNS | `Deploy` creates and links zones, `Existing` uses supplied zone IDs that are already linked to the VNet, and `PolicyManaged` leaves endpoint DNS zone groups and records to Azure Policy. |
 
 Example: discover all subscriptions visible to the application identity and
 query Cost Management per subscription:
@@ -47,7 +49,9 @@ param costManagement = {
   billingProfileId: ''
 }
 
-param storageConnectivity = 'PrivateEndpoint'
+param connectivityProfile = 'Private'
+param networkDeployment = 'Create'
+param privateDnsManagement = 'Deploy'
 ```
 
 | Environment variable | Default in code when absent or empty | Bicep value after audit | Status |

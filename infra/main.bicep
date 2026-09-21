@@ -1,9 +1,8 @@
 // Azure Capacity — infrastructure.
 // Provisions a Flex Consumption Python Function App with two storage accounts:
 // one for the Functions host + app data, one dedicated to Durable Functions.
-// storageConnectivity selects how the app reaches storage: Public, ServiceEndpoint
-// (VNet-injected app subnet allowed on storage) or PrivateEndpoint (storage public
-// access disabled, reached over private endpoints in the same VNet).
+// connectivityProfile selects public endpoints throughout or private ingress,
+// VNet-integrated egress, and private endpoints for the app and storage.
 // Code and Easy Auth are deployed separately. See docs/operations/installation.md.
 
 targetScope = 'resourceGroup'
@@ -41,6 +40,24 @@ type deploymentOutputs = {
   nextSteps: string
 }
 
+@description('Existing network resources used by the Private profile when networkDeployment is Existing.')
+type existingNetworkConfig = {
+  @description('Resource ID of the VNet containing both subnets.')
+  vnetResourceId: string
+  @description('Resource ID of a dedicated subnet delegated to Microsoft.App/environments.')
+  functionIntegrationSubnetResourceId: string
+  @description('Resource ID of the subnet used by Function App and storage private endpoints.')
+  privateEndpointSubnetResourceId: string
+}
+
+@description('Existing private DNS zones used when privateDnsManagement is Existing.')
+type existingPrivateDnsZoneConfig = {
+  functionApp: string
+  blob: string
+  queue: string
+  table: string
+}
+
 @description('Prefix for resource names; also the default Function App name stem. Lowercase letters/numbers.')
 @minLength(3)
 @maxLength(17)
@@ -62,54 +79,71 @@ param costManagement costManagementConfig = {
   billingProfileId: ''
 }
 
-@description('Memory per instance. Allowed Flex values: 512, 2048, 4096.')
-@allowed([512, 2048, 4096])
-param instanceMemoryMB int = 2048
-
-@description('Maximum scale-out instance count.')
-@minValue(1)
-@maxValue(1000)
-param maximumInstanceCount int = 40
-
 @description('Deploy Application Insights + Log Analytics for observability.')
 param deployApplicationInsights bool = true
 
-@description('Network path from the Function App to its storage accounts. Public keeps storage on its public endpoint; ServiceEndpoint creates a VNet, injects the app into a delegated subnet and restricts storage to that subnet via a Microsoft.Storage service endpoint; PrivateEndpoint creates a VNet with the app subnet plus a private-endpoint subnet, disables storage public access and reaches storage over private endpoints (blob/queue/table) resolved by private DNS in the same VNet.')
-@allowed(['Public', 'ServiceEndpoint', 'PrivateEndpoint'])
-param storageConnectivity string = 'Public'
+@description('Public exposes the authenticated app and storage endpoints publicly. Private disables public access, adds a Function private endpoint, and reaches storage through private endpoints over VNet integration.')
+@allowed(['Public', 'Private'])
+param connectivityProfile string = 'Private'
 
-@description('Address space for the VNet created for ServiceEndpoint/PrivateEndpoint. Two /26 subnets are carved out (app + private endpoints).')
+@description('For the Private profile, create a VNet and subnets or use existing network resources.')
+@allowed(['Create', 'Existing'])
+param networkDeployment string = 'Create'
+
+@description('Address space for a VNet created for the Private profile. Two /26 subnets are carved out.')
 param vnetAddressPrefix string = '10.100.0.0/24'
 
-var useServiceEndpoint = storageConnectivity == 'ServiceEndpoint'
-var usePrivateEndpoint = storageConnectivity == 'PrivateEndpoint'
-var useVnet = useServiceEndpoint || usePrivateEndpoint
+param existingNetwork existingNetworkConfig = {
+  vnetResourceId: ''
+  functionIntegrationSubnetResourceId: ''
+  privateEndpointSubnetResourceId: ''
+}
+
+@description('For the Private profile, deploy private DNS zones, attach endpoints to existing zones, or let Azure Policy manage endpoint DNS zone groups.')
+@allowed(['Deploy', 'Existing', 'PolicyManaged'])
+param privateDnsManagement string = 'Deploy'
+
+param existingPrivateDnsZones existingPrivateDnsZoneConfig = {
+  functionApp: ''
+  blob: ''
+  queue: ''
+  table: ''
+}
+
+var usePrivateConnectivity = connectivityProfile == 'Private'
+var createNetwork = usePrivateConnectivity && networkDeployment == 'Create'
+var deployPrivateDns = usePrivateConnectivity && privateDnsManagement == 'Deploy'
+var configurePrivateDnsZoneGroups = usePrivateConnectivity && privateDnsManagement != 'PolicyManaged'
 var vnetName = '${toLower(namePrefix)}-vnet'
 var appSubnetName = 'functionapp'
 
-var storagePublicNetworkAccess = usePrivateEndpoint ? 'Disabled' : 'Enabled'
-var storageNetworkAcls = useServiceEndpoint
+var storagePublicNetworkAccess = usePrivateConnectivity ? 'Disabled' : 'Enabled'
+var storageNetworkAcls = usePrivateConnectivity
   ? {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
-      virtualNetworkRules: [
-        {
-          action: 'Allow'
-          id: appSubnet.id
-        }
-      ]
     }
-  : usePrivateEndpoint
-      ? {
-          bypass: 'AzureServices'
-          defaultAction: 'Deny'
-        }
-      : {
-          bypass: 'AzureServices'
-          defaultAction: 'Allow'
-        }
+  : {
+      bypass: 'AzureServices'
+      defaultAction: 'Allow'
+    }
 
 var privateDnsZoneServices = ['blob', 'queue', 'table']
+var privateDnsZoneNames = concat(
+  ['privatelink.azurewebsites.net'],
+  map(privateDnsZoneServices, service => 'privatelink.${service}.${storageSuffix}')
+)
+var selectedVnetResourceId = createNetwork ? vnet.id : existingNetwork.vnetResourceId
+var selectedFunctionSubnetResourceId = createNetwork ? appSubnet.id : existingNetwork.functionIntegrationSubnetResourceId
+var selectedPrivateEndpointSubnetResourceId = createNetwork ? privateEndpointSubnet.id : existingNetwork.privateEndpointSubnetResourceId
+var selectedPrivateDnsZoneIds = privateDnsManagement == 'Deploy'
+  ? {
+      functionApp: resourceId('Microsoft.Network/privateDnsZones', 'privatelink.azurewebsites.net')
+      blob: resourceId('Microsoft.Network/privateDnsZones', 'privatelink.blob.${storageSuffix}')
+      queue: resourceId('Microsoft.Network/privateDnsZones', 'privatelink.queue.${storageSuffix}')
+      table: resourceId('Microsoft.Network/privateDnsZones', 'privatelink.table.${storageSuffix}')
+    }
+  : existingPrivateDnsZones
 var privateEndpointConfigs = [
   {
     key: 'app-blob'
@@ -163,8 +197,8 @@ var roleQueueDataContributor = '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
 var roleTableDataContributor = '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
 var roleMonitoringMetricsPublisher = '3913510d-42f4-4e42-8a64-420c390055eb'
 
-// VNet networking (created for ServiceEndpoint and PrivateEndpoint).
-resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = if (useVnet) {
+// VNet networking created for private deployments unless existing resources are supplied.
+resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = if (createNetwork) {
   name: vnetName
   location: location
   properties: {
@@ -176,12 +210,12 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-11-01' = if (useVnet) {
   }
 }
 
-resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2023-11-01' = if (useVnet) {
+resource networkSecurityGroup 'Microsoft.Network/networkSecurityGroups@2023-11-01' = if (createNetwork) {
   name: '${toLower(namePrefix)}-nsg'
   location: location
 }
 
-resource appSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = if (useVnet) {
+resource appSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = if (createNetwork) {
   parent: vnet
   name: appSubnetName
   properties: {
@@ -189,13 +223,6 @@ resource appSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = if (
     networkSecurityGroup: {
       id: networkSecurityGroup.id
     }
-    serviceEndpoints: useServiceEndpoint
-      ? [
-          {
-            service: 'Microsoft.Storage'
-          }
-        ]
-      : []
     delegations: [
       {
         name: 'flex'
@@ -207,7 +234,7 @@ resource appSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = if (
   }
 }
 
-resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = if (usePrivateEndpoint) {
+resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = if (createNetwork) {
   parent: vnet
   name: 'private-endpoints'
   properties: {
@@ -223,33 +250,33 @@ resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-1
 }
 
 resource privateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = [
-  for service in privateDnsZoneServices: if (usePrivateEndpoint) {
-    name: 'privatelink.${service}.${storageSuffix}'
+  for zoneName in privateDnsZoneNames: if (deployPrivateDns) {
+    name: zoneName
     location: 'global'
   }
 ]
 
 resource privateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = [
-  for (service, i) in privateDnsZoneServices: if (usePrivateEndpoint) {
+  for (zoneName, i) in privateDnsZoneNames: if (deployPrivateDns) {
     parent: privateDnsZone[i]
     name: 'link'
     location: 'global'
     properties: {
       registrationEnabled: false
       virtualNetwork: {
-        id: vnet.id
+        id: selectedVnetResourceId
       }
     }
   }
 ]
 
-resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = [
-  for pe in privateEndpointConfigs: if (usePrivateEndpoint) {
+resource storagePrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = [
+  for pe in privateEndpointConfigs: if (usePrivateConnectivity) {
     name: '${toLower(namePrefix)}-pe-${pe.key}'
     location: location
     properties: {
       subnet: {
-        id: privateEndpointSubnet.id
+        id: selectedPrivateEndpointSubnetResourceId
       }
       privateLinkServiceConnections: [
         {
@@ -266,16 +293,16 @@ resource privateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = [
   }
 ]
 
-resource privateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = [
-  for (pe, i) in privateEndpointConfigs: if (usePrivateEndpoint) {
-    parent: privateEndpoint[i]
+resource storagePrivateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = [
+  for (pe, i) in privateEndpointConfigs: if (configurePrivateDnsZoneGroups) {
+    parent: storagePrivateEndpoint[i]
     name: 'default'
     properties: {
       privateDnsZoneConfigs: [
         {
           name: pe.service
           properties: {
-            privateDnsZoneId: resourceId('Microsoft.Network/privateDnsZones', 'privatelink.${pe.service}.${storageSuffix}')
+            privateDnsZoneId: selectedPrivateDnsZoneIds[pe.service]
           }
         }
       ]
@@ -610,12 +637,14 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
     durableBlobContributor
     durableQueueContributor
     durableTableContributor
-    privateEndpointDnsGroup
+    storagePrivateEndpoint
+    storagePrivateEndpointDnsGroup
   ]
   properties: {
     serverFarmId: hostingPlan.id
     httpsOnly: true
-    virtualNetworkSubnetId: useVnet ? appSubnet.id : null
+    publicNetworkAccess: usePrivateConnectivity ? 'Disabled' : 'Enabled'
+    virtualNetworkSubnetId: usePrivateConnectivity ? selectedFunctionSubnetResourceId : null
     functionAppConfig: {
       deployment: {
         storage: {
@@ -638,8 +667,8 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
             instanceCount: 1
           }
         ]
-        instanceMemoryMB: instanceMemoryMB
-        maximumInstanceCount: maximumInstanceCount
+        instanceMemoryMB: 2048
+        maximumInstanceCount: 40
         triggers: {
           http: {
             perInstanceConcurrency: 16
@@ -651,6 +680,45 @@ resource functionApp 'Microsoft.Web/sites@2024-04-01' = {
       appSettings: concat(baseAppSettings, appInsightsSettings)
     }
   }
+}
+
+resource functionPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = if (usePrivateConnectivity) {
+  name: '${toLower(namePrefix)}-pe-function'
+  location: location
+  properties: {
+    subnet: {
+      id: selectedPrivateEndpointSubnetResourceId
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'sites'
+        properties: {
+          privateLinkServiceId: functionApp.id
+          groupIds: [
+            'sites'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource functionPrivateEndpointDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = if (configurePrivateDnsZoneGroups) {
+  parent: functionPrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'sites'
+        properties: {
+          privateDnsZoneId: selectedPrivateDnsZoneIds.functionApp
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    privateDnsZone
+  ]
 }
 
 output result deploymentOutputs = {

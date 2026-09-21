@@ -121,13 +121,13 @@ For Azure, set these as App Settings (not `local.settings.json`), and reference
 secrets (billing IDs, connection strings) via Key Vault instead of plain values.
 
 ## 6. Azure deployment (Bicep + "Deploy to Azure" button)
-**Status: public-path Bicep done (`infra/main.bicep` + `infra/main.bicepparam`);
-private path + button/auth automation still parked.** For dev, deploy with Core
-Tools (`func azure functionapp publish <app>`) or run locally (`func start`).
+**Status: public/private Bicep profiles and the deployment wizard are done;
+authentication automation is intentionally separate.** For dev, deploy with
+Core Tools (`func azure functionapp publish <app>`) or run locally (`func start`).
 Goal: public repo with a one-click **Deploy to Azure** button so anyone can run
 their own instance.
 
-**Done (public path, `infra/main.bicep`):** two storage accounts (host+app-data,
+**Done (`infra/main.bicep`):** two storage accounts (host+app-data,
 durable) wired with **managed identity / identity-based auth** — both accounts set
 `allowSharedKeyAccess: false`; the app-data account exposes blob/queue/table via
 `AzureWebJobsStorage__accountName`/`__credential=managedidentity`/`__clientId` +
@@ -142,8 +142,9 @@ kind `functionapp,linux` with `functionAppConfig` (python 3.12, `alwaysReady
 durable instanceCount:1`); `AZURE_CLIENT_ID` set for the collectors' ARM access
 (grant the MI **Reader** on the target scope manually — above the RG-scoped
 template); App Insights + Log Analytics (optional); all `settings.py` App
-Settings; `publicNetworkAccess: Enabled`, no VNet/private endpoints. Compiles
-clean.
+Settings. The `Public` profile uses public Function and storage endpoints. The
+default `Private` profile adds VNet integration, Function and storage private
+endpoints, and deployable, existing, or policy-managed private DNS. Compiles clean.
 
 **Still parked below:**
 
@@ -161,7 +162,7 @@ Two planes (a button can only do the first):
   - `runtime` python 3.12,
   - `scaleAndConcurrency.alwaysReady: [{name:'durable', instanceCount:1}]` —
     **KEY for Durable** (keeps a warm instance so orchestrations dispatch),
-    plus `instanceMemoryMB`, `maximumInstanceCount`, `http.perInstanceConcurrency`.
+    plus fixed instance memory and scale limits and `http.perInstanceConcurrency`.
 - **Secretless storage (done):** user-assigned MI +
   `AzureWebJobsStorage__accountName` / `__credential=managedidentity` (no shared
   keys, `allowSharedKeyAccess: false`); role assignments Storage **Blob + Table

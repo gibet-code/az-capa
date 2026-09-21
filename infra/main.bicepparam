@@ -17,4 +17,8 @@ param costManagement = {
 
 param deployApplicationInsights = true
 
-param storageConnectivity = 'PrivateEndpoint'
+param connectivityProfile = 'Private'
+
+param networkDeployment = 'Create'
+
+param privateDnsManagement = 'Deploy'

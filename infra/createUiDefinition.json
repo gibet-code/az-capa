@@ -1,0 +1,479 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/0.1.2-preview/CreateUIDefinition.MultiVm.json#",
+  "handler": "Microsoft.Azure.CreateUIDef",
+  "version": "0.1.2-preview",
+  "parameters": {
+    "config": {
+      "isWizard": true,
+      "basics": {
+        "description": "Deploy Azure Capacity infrastructure. Entra application registration, Easy Auth, backend role assignment, and application package deployment are completed after this deployment.",
+        "subscription": {
+          "resourceProviders": [
+            "Microsoft.App",
+            "Microsoft.Insights",
+            "Microsoft.ManagedIdentity",
+            "Microsoft.Network",
+            "Microsoft.OperationalInsights",
+            "Microsoft.Storage",
+            "Microsoft.Web"
+          ]
+        },
+        "resourceGroup": {
+          "allowExisting": true
+        },
+        "location": {
+          "label": "Region",
+          "toolTip": "The Function App and any newly created virtual network are deployed in this region.",
+          "resourceTypes": [
+            "Microsoft.Web/sites",
+            "Microsoft.Web/serverfarms"
+          ]
+        }
+      }
+    },
+    "basics": [],
+    "steps": [
+      {
+        "name": "application",
+        "label": "Application",
+        "elements": [
+          {
+            "name": "namePrefix",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Name prefix",
+            "defaultValue": "azcapacity",
+            "toolTip": "Lowercase letters and numbers, 3 to 17 characters. The deployment derives globally unique resource names from this prefix.",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "regex": "^[a-z0-9]{3,17}$",
+                  "message": "Use 3 to 17 lowercase letters or numbers."
+                }
+              ]
+            },
+            "visible": true
+          },
+          {
+            "name": "deployApplicationInsights",
+            "type": "Microsoft.Common.CheckBox",
+            "label": "Deploy Application Insights and Log Analytics",
+            "defaultValue": true,
+            "toolTip": "Recommended for monitoring and troubleshooting the Function App.",
+            "visible": true
+          },
+          {
+            "name": "postDeploymentInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": true,
+            "options": {
+              "icon": "Info",
+              "text": "This deployment creates Azure infrastructure only. Complete Entra registration, Easy Auth, backend RBAC assignment, and application package deployment afterward."
+            }
+          }
+        ]
+      },
+      {
+        "name": "dataScope",
+        "label": "Data scope",
+        "elements": [
+          {
+            "name": "scopeMode",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Application scope",
+            "defaultValue": "All accessible subscriptions",
+            "toolTip": "Controls which subscriptions the application discovers and collects.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "All accessible subscriptions",
+                  "description": "Discover every subscription visible to the application identity.",
+                  "value": "All"
+                },
+                {
+                  "label": "Selected subscriptions",
+                  "description": "Limit collection to a comma-separated list of subscription IDs.",
+                  "value": "Subscriptions"
+                },
+                {
+                  "label": "Management groups",
+                  "description": "Discover subscriptions under one or more management groups.",
+                  "value": "ManagementGroups"
+                }
+              ],
+              "required": true
+            },
+            "visible": true
+          },
+          {
+            "name": "subscriptionIds",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Subscription IDs",
+            "defaultValue": "",
+            "toolTip": "Comma-separated Azure subscription GUIDs.",
+            "placeholder": "00000000-0000-0000-0000-000000000000",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "regex": "^[0-9a-fA-F-]{36}(\\s*,\\s*[0-9a-fA-F-]{36})*$",
+                  "message": "Enter one or more comma-separated subscription GUIDs."
+                }
+              ]
+            },
+            "visible": "[equals(steps('dataScope').scopeMode, 'Subscriptions')]"
+          },
+          {
+            "name": "managementGroupIds",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Management group IDs",
+            "defaultValue": "",
+            "toolTip": "Comma-separated management group IDs, without resource ID prefixes.",
+            "placeholder": "contoso-platform,contoso-business",
+            "constraints": {
+              "required": true
+            },
+            "visible": "[equals(steps('dataScope').scopeMode, 'ManagementGroups')]"
+          },
+          {
+            "name": "locations",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Azure location filter",
+            "defaultValue": "",
+            "toolTip": "Optional comma-separated Azure location names. Leave empty to include all locations.",
+            "placeholder": "westeurope,northeurope",
+            "constraints": {
+              "required": false
+            },
+            "visible": true
+          },
+          {
+            "name": "costMethod",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Cost retrieval method",
+            "defaultValue": "Per subscription",
+            "toolTip": "Query costs per subscription or at billing scope.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Per subscription",
+                  "description": "Query each resolved subscription independently.",
+                  "value": "per-sub"
+                },
+                {
+                  "label": "Per billing scope",
+                  "description": "Query the configured billing account or profile.",
+                  "value": "per-billing"
+                }
+              ],
+              "required": true
+            },
+            "visible": true
+          },
+          {
+            "name": "agreementType",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Agreement type",
+            "defaultValue": "Enterprise Agreement (EA)",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Enterprise Agreement (EA)",
+                  "value": "ea"
+                },
+                {
+                  "label": "Microsoft Customer Agreement (MCA)",
+                  "value": "mca"
+                }
+              ],
+              "required": true
+            },
+            "visible": true
+          },
+          {
+            "name": "billingAccountId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Billing account ID",
+            "defaultValue": "",
+            "toolTip": "Required for billing-scope cost retrieval.",
+            "constraints": {
+              "required": true
+            },
+            "visible": "[equals(steps('dataScope').costMethod, 'per-billing')]"
+          },
+          {
+            "name": "billingProfileId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Billing profile ID",
+            "defaultValue": "",
+            "toolTip": "Required for MCA billing-scope cost retrieval.",
+            "constraints": {
+              "required": true
+            },
+            "visible": "[and(equals(steps('dataScope').costMethod, 'per-billing'), equals(steps('dataScope').agreementType, 'mca'))]"
+          }
+        ]
+      },
+      {
+        "name": "networking",
+        "label": "Networking",
+        "elements": [
+          {
+            "name": "connectivityProfile",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Connectivity profile",
+            "defaultValue": "Private (recommended)",
+            "toolTip": "Private disables public access to the Function App and storage accounts.",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Private (recommended)",
+                  "description": "Private Function and storage endpoints with Function VNet integration.",
+                  "value": "Private"
+                },
+                {
+                  "label": "Public",
+                  "description": "Public Function and storage endpoints, protected by Entra ID and Azure RBAC.",
+                  "value": "Public"
+                }
+              ],
+              "required": true
+            },
+            "visible": true
+          },
+          {
+            "name": "networkDeployment",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Network placement",
+            "defaultValue": "Create a virtual network",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Create a virtual network",
+                  "description": "Create a VNet with separate /26 Function integration and private endpoint subnets.",
+                  "value": "Create"
+                },
+                {
+                  "label": "Use existing network resources",
+                  "description": "Use an existing VNet and two prepared subnets.",
+                  "value": "Existing"
+                }
+              ],
+              "required": true
+            },
+            "visible": "[equals(steps('networking').connectivityProfile, 'Private')]"
+          },
+          {
+            "name": "vnetAddressPrefix",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Virtual network address prefix",
+            "defaultValue": "10.100.0.0/24",
+            "toolTip": "The template creates two /26 subnets from this prefix.",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "regex": "^(10|172|192)\\.([0-9]{1,3}\\.){2}[0-9]{1,3}/([89]|1[0-9]|2[0-5])$",
+                  "message": "Enter an IPv4 CIDR prefix large enough for two /26 subnets, for example 10.100.0.0/24."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Create'))]"
+          },
+          {
+            "name": "existingNetworkInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing'))]",
+            "options": {
+              "icon": "Warning",
+              "text": "The Function integration subnet must be dedicated, at least /27, and delegated to Microsoft.App/environments. The private endpoint subnet must be different. Both must be in the selected region."
+            }
+          },
+          {
+            "name": "vnetResourceId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Existing virtual network resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[and(startsWith(toLower(steps('networking').vnetResourceId), '/subscriptions/'), contains(toLower(steps('networking').vnetResourceId), '/providers/microsoft.network/virtualnetworks/'))]",
+                  "message": "Enter a complete virtual network resource ID."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing'))]"
+          },
+          {
+            "name": "functionIntegrationSubnetResourceId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Function integration subnet resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[and(startsWith(toLower(steps('networking').functionIntegrationSubnetResourceId), '/subscriptions/'), contains(toLower(steps('networking').functionIntegrationSubnetResourceId), '/providers/microsoft.network/virtualnetworks/'), contains(toLower(steps('networking').functionIntegrationSubnetResourceId), '/subnets/'))]",
+                  "message": "Enter a complete subnet resource ID."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing'))]"
+          },
+          {
+            "name": "privateEndpointSubnetResourceId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Private endpoint subnet resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[and(startsWith(toLower(steps('networking').privateEndpointSubnetResourceId), '/subscriptions/'), contains(toLower(steps('networking').privateEndpointSubnetResourceId), '/providers/microsoft.network/virtualnetworks/'), contains(toLower(steps('networking').privateEndpointSubnetResourceId), '/subnets/'))]",
+                  "message": "Enter a complete subnet resource ID."
+                },
+                {
+                  "isValid": "[not(equals(toLower(steps('networking').privateEndpointSubnetResourceId), toLower(steps('networking').functionIntegrationSubnetResourceId)))]",
+                  "message": "The private endpoint and Function integration subnets must be different."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing'))]"
+          },
+          {
+            "name": "privateDnsManagement",
+            "type": "Microsoft.Common.DropDown",
+            "label": "Private DNS management",
+            "defaultValue": "Deploy private DNS zones",
+            "constraints": {
+              "allowedValues": [
+                {
+                  "label": "Deploy private DNS zones",
+                  "description": "Create and link all required private DNS zones and endpoint zone groups.",
+                  "value": "Deploy"
+                },
+                {
+                  "label": "Use existing private DNS zones",
+                  "description": "Attach endpoint zone groups to centrally managed zones that are already linked to the VNet.",
+                  "value": "Existing"
+                },
+                {
+                  "label": "Managed by Azure Policy",
+                  "description": "Create endpoints only; policy must create every required DNS zone group and record.",
+                  "value": "PolicyManaged"
+                }
+              ],
+              "required": true
+            },
+            "visible": "[equals(steps('networking').connectivityProfile, 'Private')]"
+          },
+          {
+            "name": "policyDnsInfo",
+            "type": "Microsoft.Common.InfoBox",
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'PolicyManaged'))]",
+            "options": {
+              "icon": "Warning",
+              "text": "Azure Policy must configure DNS for the Function App and all storage private endpoints before the application can start successfully."
+            }
+          },
+          {
+            "name": "functionDnsZoneId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "privatelink.azurewebsites.net zone resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[contains(toLower(steps('networking').functionDnsZoneId), '/providers/microsoft.network/privatednszones/privatelink.azurewebsites.net')]",
+                  "message": "Enter the complete privatelink.azurewebsites.net zone resource ID."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing'))]"
+          },
+          {
+            "name": "blobDnsZoneId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Blob private DNS zone resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[contains(toLower(steps('networking').blobDnsZoneId), '/providers/microsoft.network/privatednszones/privatelink.blob.') ]",
+                  "message": "Enter the complete Blob private DNS zone resource ID."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing'))]"
+          },
+          {
+            "name": "queueDnsZoneId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Queue private DNS zone resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[contains(toLower(steps('networking').queueDnsZoneId), '/providers/microsoft.network/privatednszones/privatelink.queue.') ]",
+                  "message": "Enter the complete Queue private DNS zone resource ID."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing'))]"
+          },
+          {
+            "name": "tableDnsZoneId",
+            "type": "Microsoft.Common.TextBox",
+            "label": "Table private DNS zone resource ID",
+            "defaultValue": "",
+            "constraints": {
+              "required": true,
+              "validations": [
+                {
+                  "isValid": "[contains(toLower(steps('networking').tableDnsZoneId), '/providers/microsoft.network/privatednszones/privatelink.table.') ]",
+                  "message": "Enter the complete Table private DNS zone resource ID."
+                }
+              ]
+            },
+            "visible": "[and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing'))]"
+          }
+        ]
+      }
+    ],
+    "outputs": {
+      "namePrefix": "[steps('application').namePrefix]",
+      "location": "[location()]",
+      "scope": {
+        "subscriptionIds": "[if(equals(steps('dataScope').scopeMode, 'Subscriptions'), steps('dataScope').subscriptionIds, '')]",
+        "managementGroupIds": "[if(equals(steps('dataScope').scopeMode, 'ManagementGroups'), steps('dataScope').managementGroupIds, '')]",
+        "locations": "[steps('dataScope').locations]"
+      },
+      "costManagement": {
+        "method": "[steps('dataScope').costMethod]",
+        "agreementType": "[steps('dataScope').agreementType]",
+        "billingAccountId": "[if(equals(steps('dataScope').costMethod, 'per-billing'), steps('dataScope').billingAccountId, '')]",
+        "billingProfileId": "[if(and(equals(steps('dataScope').costMethod, 'per-billing'), equals(steps('dataScope').agreementType, 'mca')), steps('dataScope').billingProfileId, '')]"
+      },
+      "deployApplicationInsights": "[steps('application').deployApplicationInsights]",
+      "connectivityProfile": "[steps('networking').connectivityProfile]",
+      "networkDeployment": "[if(equals(steps('networking').connectivityProfile, 'Private'), steps('networking').networkDeployment, 'Create')]",
+      "vnetAddressPrefix": "[steps('networking').vnetAddressPrefix]",
+      "existingNetwork": {
+        "vnetResourceId": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing')), steps('networking').vnetResourceId, '')]",
+        "functionIntegrationSubnetResourceId": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing')), steps('networking').functionIntegrationSubnetResourceId, '')]",
+        "privateEndpointSubnetResourceId": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').networkDeployment, 'Existing')), steps('networking').privateEndpointSubnetResourceId, '')]"
+      },
+      "privateDnsManagement": "[if(equals(steps('networking').connectivityProfile, 'Private'), steps('networking').privateDnsManagement, 'Deploy')]",
+      "existingPrivateDnsZones": {
+        "functionApp": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing')), steps('networking').functionDnsZoneId, '')]",
+        "blob": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing')), steps('networking').blobDnsZoneId, '')]",
+        "queue": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing')), steps('networking').queueDnsZoneId, '')]",
+        "table": "[if(and(equals(steps('networking').connectivityProfile, 'Private'), equals(steps('networking').privateDnsManagement, 'Existing')), steps('networking').tableDnsZoneId, '')]"
+      }
+    }
+  }
+}

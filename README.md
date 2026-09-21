@@ -35,6 +35,12 @@ usage, reference, and operational data and presenting ODCR-oriented reports.
 
 ## Getting started
 
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2Fgibet-code%2Faz-capa%2Fmain%2Finfra%2FmainTemplate.json/createUIDefinitionUri/https%3A%2F%2Fraw.githubusercontent.com%2Fgibet-code%2Faz-capa%2Fmain%2Finfra%2FcreateUiDefinition.json)
+
+The deployment wizard defaults to private Function and storage connectivity.
+It provisions Azure infrastructure only; Entra registration, Easy Auth, backend
+role assignment, and application package deployment remain separate steps.
+
 See [Install Azure Capacity in Azure](docs/operations/installation.md) for the
 complete installation procedure.
 
