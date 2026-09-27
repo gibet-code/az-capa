@@ -6,6 +6,7 @@ import azure.durable_functions as df
 import azure.functions as func
 
 from functions.activity_log_bp import bp as activity_log_bp
+from functions.allocation_events_bp import bp as allocation_events_bp
 from functions.compute_skus_bp import bp as compute_skus_bp
 from functions.cr_usage_bp import bp as cr_usage_bp
 from functions.data_collection_bp import bp as data_collection_bp
@@ -26,6 +27,7 @@ app = df.DFApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 app.register_blueprint(vm_usage_bp)
 app.register_blueprint(cr_usage_bp)
 app.register_blueprint(activity_log_bp)
+app.register_blueprint(allocation_events_bp)
 app.register_blueprint(zone_mapping_bp)
 app.register_blueprint(compute_skus_bp)
 app.register_blueprint(subscription_reference_bp)

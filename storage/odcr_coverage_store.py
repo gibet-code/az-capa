@@ -11,7 +11,12 @@ from azure.data.tables import UpdateMode
 
 from core import settings
 from core.identity import UserAuditMetadata
-from .table import LazyTableClient, MAX_TRANSACTION_OPERATIONS as _MAX_BATCH, table_service_client
+from .table import (
+    LazyTableClient,
+    MAX_TRANSACTION_OPERATIONS as _MAX_BATCH,
+    submit_table_transaction,
+    table_service_client,
+)
 
 _MAX_READ_CONCURRENCY = 20
 _COVERAGE_SELECT = [
@@ -63,7 +68,7 @@ class OdcrCoverageDecisionsStore:
         for partition_entities in by_partition.values():
             for start in range(0, len(partition_entities), _MAX_BATCH):
                 chunk = partition_entities[start:start + _MAX_BATCH]
-                table.submit_transaction([
+                submit_table_transaction(table, [
                     ("upsert", entity, {"mode": UpdateMode.REPLACE}) for entity in chunk
                 ])
                 entities.extend(chunk)

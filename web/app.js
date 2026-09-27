@@ -73,7 +73,15 @@ function app() {
         this.notificationDrawerOpen = true;
         this.page = "vm";
       } else {
-        this.page = hash === "vm" || hash.startsWith("vm/") || hash.startsWith("odcr/") ? "vm" : "settings";
+        this.page = hash === "allocation-events"
+          ? "allocation-events"
+          : hash === "vm" || hash.startsWith("vm/") || hash.startsWith("odcr/")
+            ? "vm"
+            : "settings";
+      }
+      if (this.page === "allocation-events") {
+        if (loadReport && !this.allocationVmsLoaded) this.loadAllocationEventVms();
+        return;
       }
       if (this.page === "vm") {
         this.activateOdcrTab(
@@ -267,6 +275,8 @@ function app() {
       const h = Math.floor(s / 3600);
       const m = Math.floor((s % 3600) / 60);
       const sec = s % 60;
+      const d = Math.floor(h / 24);
+      if (d > 0) return `${d}d ${h % 24}h`;
       if (h > 0) return `${h}h ${m}m`;
       if (m > 0) return `${m}m ${sec}s`;
       return `${sec}s`;
@@ -311,11 +321,32 @@ function app() {
         return iso;
       }
     },
+
+    formatDateTimeWithTimeZone(input) {
+      if (!input) return "—";
+      try {
+        const value = new Date(input);
+        if (Number.isNaN(value.getTime())) return String(input);
+        const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Local time";
+        const formatted = value.toLocaleString(undefined, {
+          year: "numeric",
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+          second: "2-digit",
+        });
+        return `${formatted} (${timeZone})`;
+      } catch (_) {
+        return String(input);
+      }
+    },
   };
   return applyFeatures(
     root,
     createNotificationsFeature(),
     createAdministrationFeature(),
+    createAllocationEventsFeature(),
     createDataCollectionFeature(),
     createPreferenceStoreFeature(),
     createScopeFeature(),

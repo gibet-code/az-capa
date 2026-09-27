@@ -39,6 +39,13 @@ def _get_int(name: str, default: int) -> int:
         return default
 
 
+def _get_bool(name: str, default: bool) -> bool:
+    raw = _get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_list(name: str) -> list[str]:
     raw = _get(name)
     if not raw:
@@ -139,12 +146,12 @@ def activity_log_refresh_overlap_hours() -> int:
     return max(_get_int("ACTIVITY_LOG_REFRESH_OVERLAP_HOURS", 24), 0)
 
 
-def activity_log_ingestion_lag_minutes() -> int:
-    return max(_get_int("ACTIVITY_LOG_INGESTION_LAG_MINUTES", 20), 0)
-
-
 def activity_log_max_concurrency() -> int:
     return max(_get_int("ACTIVITY_LOG_MAX_CONCURRENCY", 20), 1)
+
+
+def activity_log_inline_payload_max_bytes() -> int:
+    return max(_get_int("ACTIVITY_LOG_INLINE_PAYLOAD_MAX_BYTES", 60_000), 0)
 
 
 def activity_log_replay_max_units_per_run() -> int:
@@ -233,11 +240,6 @@ def subscription_context_max_stale_minutes() -> int:
 
 
 # ── Data Collection scheduler ─────────────────────────────
-def data_collection_dispatch_schedule() -> str:
-    """CRON for the single dispatcher timer; the only trigger needing a restart."""
-    return _get("DATA_COLLECTION_DISPATCH_SCHEDULE", "0 */5 * * * *")
-
-
 def data_collection_history_retention_days() -> int:
     return max(_get_int("DATA_COLLECTION_HISTORY_RETENTION_DAYS", 30), 1)
 

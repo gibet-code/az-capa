@@ -19,7 +19,10 @@ if (-not (Test-Path -LiteralPath $activatePath -PathType Leaf)) {
     throw "Python virtual environment not found: $activatePath"
 }
 
-$null = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
+$settings = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
+if ($settings.Values.AZ_CAPACITY_START_STANDALONE_AZURITE -eq 'true') {
+    & (Join-Path $PSScriptRoot 'start-azurite.ps1')
+}
 Copy-Item -LiteralPath $profilePath -Destination $activeSettingsPath -Force
 . $activatePath
 

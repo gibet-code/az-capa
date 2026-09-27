@@ -3,18 +3,19 @@
 ## Status
 
 Current implemented specification for Activity Log source collection and inline
-operation assembly. Domain histories and reporting projections are planned
-separately in
+operation assembly. Domain materializers are planned separately in
 [Activity Log Materializers](../planning/activity-log-materializers.md).
+The implemented query-time Allocation Events consumer is specified in
+[Allocation Events](allocation-events.md).
 
 The pipeline collects Activity Log source events and assembles them into
 operations inline. Each collected event is retained durably and replayable from
-its inline payload, except outcome-only recipes (lifecycle actions) that opt out
-of payload retention (Section 4); operation assembly runs as a phase of the same
+its compressed Table property or Blob payload, except outcome-only recipes
+(lifecycle actions) that opt out of payload retention (Section 4); operation
+assembly runs as a phase of the same
 collection orchestration rather than through a separate queue-triggered worker.
-Domain history stores and reporting projections are intentionally deferred.
-Their required inputs are recorded so the source pipeline does not discard
-information they will need.
+Domain history stores remain deferred. Their required inputs are recorded so
+the source pipeline does not discard information they will need.
 
 ## Purpose
 
@@ -107,9 +108,9 @@ Activity Log collection orchestrator
   assemble operations from the just-retained events (inline phase)
   reconcile per-recipe version drift (bounded replay) and sweep stale operations
           |
-          +----> ActivityLogOperations (Table)      [projected fields + inline gzip payload]
+          +----> ActivityLogOperations (Table)      [projected fields + payload pointer/optional inline gzip]
           +----> ActivityLogCollectionState (Table)  [coverage + per-recipe materialized version]
-          +----> OversizePayloadSpill (private Blob)  [rare: payload exceeds Table property limit]
+          +----> PayloadSpill (private Blob)          [retained gzip payloads above configured inline limit]
 
 Deferred (introduced with the first domain materializer, not now):
   - operation-ready notification for downstream materializers
@@ -154,8 +155,7 @@ Each recipe has this logical shape:
 ```
 
 A recipe declares only *what* to collect and *what to keep*. Collection tuning —
-initial lookback, overlap, and ingestion lag — is global (Section 3), not
-per-recipe.
+initial lookback and overlap — is global (Section 3), not per-recipe.
 
 **Field optionality.** The server-side selectors are optional; an unset or
 `null` field imposes no filter on that dimension (widest match):
@@ -188,31 +188,24 @@ nothing beyond the failure reason — set `retainPayload=false`: their rows carr
 projected columns and the operation outcome but no stored event, so they are not
 replayable and instead depend on re-collection within the source window if a new
 field is ever added. `version` is bumped to trigger a per-recipe replay that
-re-derives history from the retained payloads (Section 10.3); recipes that opt
-out of retention are excluded from replay.
+re-derives history from retained payloads (Section 10.3); recipes that opt out
+of retention require re-collection instead. The VM lifecycle recipe covers
+start, deallocate, reapply, redeploy, and restart actions. For failed actions it
+preserves the parent error and complete sanitized detail hierarchy separately,
+with queryable summary and allocation-classification columns.
 
 The initial recipe families are:
 
 | Recipe family | Why it is collected |
 |---|---|
-| Existing VM lifecycle actions (`start`/`deallocate`/`reapply`/`redeploy`) | Allocation/deallocation outcomes; allocation failures surface on these action operations (not on `write`), with provider failure details. |
+| Existing VM lifecycle actions (`start`/`deallocate`/`reapply`/`redeploy`/`restart`) | Allocation/deallocation outcomes; allocation failures surface on these action operations (not on `write`), with provider failure details. |
 | VM write/delete | Submitted and applied VM configuration; resource-generation boundaries. |
-| VMSS write/delete and relevant scale/instance actions | Scale-set model changes, requested capacity changes, and allocation outcomes. |
 | CRG write/delete | Capacity-reservation placement context such as location and zones. |
 | Capacity Reservation write/delete | Requested SKU/capacity and reservation provisioning outcomes; child events carry their own resource ID and are returned by a CRG-scoped query. Operation-name casing varies across events, but the server-side `operations` filter folds case, so collection is unaffected; only the operation identity used for pairing normalizes casing. |
-| `Microsoft.Management` registration | Earliest observed `Microsoft.Management/register/action` on `/subscriptions/{id}/providers/Microsoft.Management`, a subscription-creation proxy. |
 
-The subscription-creation proxy is a single pinned filter, not a generic
-provider-registration scan: `operationName = Microsoft.Management/register/action`
-on `resourceId = /subscriptions/{subscriptionId}/providers/Microsoft.Management`.
-It is an `operationNames`-only recipe with no natural resource type, which is
-why the recipe invariant is “at least one of `resourceTypes` or `operationNames`”
-rather than “`resourceTypes` mandatory”. Because both the operation and the
-resource ID are fixed, no target-namespace extraction or generic
-`/register/action` parsing is needed. That registration is not itself a
-subscription-create event — it can be automatic, delayed, repeated, or absent —
-so downstream code exposes its earliest timestamp as an estimate with
-provenance.
+VMSS configuration and `Microsoft.Management/register/action` collection are
+currently disabled because no report consumes them. Their definitions remain
+in the recipe registry as commented reference implementations.
 
 A newly added or widened recipe starts from empty coverage and its next
 collection backfills up to the global lookback boundary; it does not delete or
@@ -312,11 +305,49 @@ For each subscription work unit, the collector:
    compressed payload, and assembles operations (Section 8); and
 6. retries throttled and transient pages using Durable timers.
 
-Ingestion lag, overlap, and initial lookback are global settings, not per-recipe
-knobs. The default ingestion lag is at least 20 minutes because Azure documents
-typical Activity Log availability in the 3-20 minute range. The default overlap
-is at least 24 hours. Reducing either requires evidence that delayed events are
-still captured.
+Report and timeline reads query Table Storage by subscription and time window,
+then match `OperationName` case-insensitively in application code. Azure Table
+Storage string equality is case-sensitive, while Activity Log can vary casing
+within the provider/type portion as well as the action name.
+
+Overlap and initial lookback are global settings, not per-recipe knobs. Source
+collection uses complete UTC days: every run targets midnight at the start of
+the current UTC day, so multiple triggers during one day share a stable target
+and never repeatedly advance to browser or worker wall-clock time. The default
+overlap is at least 24 hours. Reducing it requires evidence that delayed events
+are still captured.
+
+The logical target interval is half-open: `[targetStart, targetEnd)`. Because
+the Azure Activity Log API uses an inclusive `eventTimestamp le` upper bound,
+the transport query ends one millisecond before `targetEnd`; committed
+`coverageEnd` remains the exclusive midnight boundary.
+
+The Activity Log pipeline is scheduled hourly. The dispatcher remains the
+single concurrency gate: while one run is active, later scheduler ticks do not
+start or record another collector run. Because the rejected start does not
+advance `lastDispatchedAt`, the overdue pipeline is reconsidered on the next
+dispatcher tick after the active run finishes.
+
+Planning is per subscription and treats committed collection coverage as the
+authoritative resume checkpoint:
+
+- a subscription with no coverage requests the complete global lookback;
+- a subscription whose `coverageEnd` is before the target requests only the
+  missing tail plus the configured overlap;
+- a subscription whose `coverageStart` is after the desired historical start
+  requests only that missing historical head;
+- a subscription already covering the target with current recipe versions is
+  omitted from the plan; and
+- recipe/filter drift requests the bounded complete window because previously
+  excluded source events may be required.
+
+One subscription work unit may contain both a historical-head and recent-tail
+window. Its windows run sequentially and its combined coverage is committed
+only after every page of every window succeeds. Pages written before a failure
+remain safe because operation upserts are deterministic, but coverage does not
+advance; the next run plans that subscription again. Successful subscriptions
+commit independently, so a partial or failed run resumes only missing
+subscriptions and intervals rather than refreshing the entire scope.
 
 The first successful collection for a subscription requests up to the global
 89-day lookback. Azure retains the source for 90 days; the one-day margin
@@ -326,25 +357,28 @@ be reconstructed from Activity Log alone.
 ## 4. Retained Payload and Oversize Spill
 
 Each collected event that matches a **payload-retaining** recipe is retained
-inline on its operation row (Section 8), not in a separate raw ledger. Retention
-is governed per recipe by the `retainPayload` flag (Section 3); outcome-only
+on its operation row or in the private spill container (Section 8), not in a
+separate raw ledger. Retention is governed per recipe by the `retainPayload`
+flag (Section 3); outcome-only
 recipes (`retainPayload=false`) store projected columns and outcome but no event
 body:
 
 - recipe `projectedFields` become typed, queryable columns;
 - for a retaining recipe, the full event is serialized to JSON, gzip-compressed,
-  and stored as a binary property with a `PayloadEncoding` marker;
+  and stored inline or in Blob according to
+  `ACTIVITY_LOG_INLINE_PAYLOAD_MAX_BYTES`, with a `PayloadEncoding` marker;
 - retaining the whole event (not only `responseBody`) keeps future
   `projectedFields` replayable from stored data. When every recipe matching an
   event opts out of retention, the row's `AppliedPayloadGz` and `PayloadEncoding`
   are left null — the applied event is still identified (`AppliedEventId`) and
   its columns merged, but nothing is stored for replay.
 
-Azure Table Storage caps a property at 64 KB and an entity at 1 MB. Real
-Activity Log payloads are a few KB and compress to well under that, so inline
-storage is the norm. The rare event whose compressed payload still exceeds the
-property limit spills to a private Blob; the row keeps a pointer and a
-truncation flag. Blob is therefore an exception path, not the primary store.
+Azure Table Storage caps a property at 64 KB and an entity at 1 MB. The default
+inline limit is 60,000 bytes. A payload above the configured limit spills to a
+private Blob; the row keeps a pointer and a truncation flag. A limit of `0`
+spills every retained payload and error detail, which is the local Azurite
+configuration because its LokiJS table database has a much lower aggregate
+serialization ceiling than Azure Table Storage.
 
 Deterministic content-addressed batch names are unnecessary: event-level
 identity (`subscriptionId + eventDataId`) already makes duplicate and
@@ -388,7 +422,7 @@ LastUpsertAt
 UpdatedAt
 ```
 
-For one work unit, the commit sequence is:
+For one subscription work unit, the commit sequence is:
 
 1. Fetch an Azure page.
 2. Gzip-compress each matching event's payload and derive its projected fields.
@@ -398,9 +432,9 @@ For one work unit, the commit sequence is:
    projection is best-effort, so an event whose fields cannot be derived is
    still assembled, with its row flagged `reprojection-pending` (Section 10.3)
    when a retained payload exists to replay from.
-4. Continue to the next Azure page.
-5. Advance the subscription coverage only after every page in the time window is
-   upserted successfully.
+4. Continue to the next Azure page and then any additional planned window.
+5. Advance the subscription coverage only after every page in every planned
+   window is upserted successfully.
 
 With a single retained store, the upsert of projected columns plus inline
 payload is the commit. Assembly is a deterministic, idempotent function of the
@@ -513,8 +547,8 @@ SubscriptionId, ResourceId, ResourceType, OperationName (identity uses lowercase
 FirstEventTime, LastEventTime
 RequestEventId, TerminalEventId, AllEventIds
 ProjectedFields: recipe-declared typed columns (e.g. VmSize, Location, Zones, SkuName, Capacity, ProvisioningState, ErrorCode)
-AppliedPayloadGz, PayloadEncoding        (full applied event, gzip-compressed inline; null for outcome-only recipes)
-AppliedPayloadSpillBlob, PayloadTruncated (set only on the rare oversize spill)
+AppliedPayloadGz, PayloadEncoding         (optional inline gzip; null for outcome-only or spilled payloads)
+AppliedPayloadSpillBlob, PayloadTruncated (set when the configured inline limit spills the payload)
 Outcome: pending | succeeded | failed | cancelled | unknown
 PairingStatus: paired | unpaired
 AssemblerVersion, RecipeVersion
@@ -530,6 +564,18 @@ paths to typed columns. The terminal event validates whether the operation was
 applied. A failed write emits no `responseBody`, so its size, location, and zone
 must be attributed from the resource's configuration-at-the-time in a later
 materializer, not from the failure event.
+
+`ProjectedField.onStatus` declares which source stage owns each projection. The
+`vm-configuration` version 3 reads size, location, zones, provisioning
+state, and Capacity Reservation Group from `Accepted`, and reads error code and
+message from `Failed`. Version 3 preserves the parent, first-detail summary,
+recursive codes, classification flag, and full sanitized details instead of
+replacing one error level with another. Generic assembly merges both stages
+into one operation.
+Because the retained `AppliedPayloadGz` is normally the Accepted-stage payload,
+recovering newly added terminal-error projections for existing operations
+requires Azure re-collection while the source events remain in Activity Log;
+replaying only the applied payload cannot recover the terminal detail.
 
 If a successful write contains no relevant configuration changes, the assembled
 operation still exists. A later domain materializer decides whether it produces
@@ -561,6 +607,17 @@ materializer exists; until then no notification is emitted and no consumer
 depends on one. When introduced, consumers are independently idempotent, track
 their own processing version, and their success is not part of collection
 success.
+
+### Allocation Events read model
+
+Allocation Events is an implemented query-time consumer of retained
+`vm-lifecycle` and `vm-configuration` operations, not a domain materializer.
+This pipeline owns the source facts, projected columns, error hierarchy,
+coverage boundaries, and version metadata it consumes.
+
+Allocation classification, metric formulas, Resource Graph population,
+authorization, API contracts, timeline semantics, and UI presentation are
+owned by [Allocation Events](allocation-events.md).
 
 ## 9. Idempotency and Failure Handling
 
@@ -608,12 +665,14 @@ records; none scans all retained history on every run.
 
 ### 10.1 Activity Log overlap reconciliation
 
-Normal collection re-queries at least the configured overlap window. The
-overlapping re-query re-reads recent events, and the inline assembly phase
-re-evaluates the affected operations by `correlationId`, so late and out-of-order
-stages complete automatically without a dedicated worker. Coverage advances by
-event-time query window, while `submissionTimestamp` and `retrievedAt` remain
-available to measure source lag.
+When a subscription is behind the complete-day target, normal collection starts
+at its committed `coverageEnd` minus the configured overlap. The overlapping
+re-query re-reads recent events, and the inline assembly phase re-evaluates the
+affected operations by `correlationId`, so late and out-of-order stages complete
+automatically without a dedicated worker. A subscription already at the target
+is not queried merely to repeat the overlap. Coverage advances by event-time
+query window, while `submissionTimestamp` and `retrievedAt` remain available to
+measure source lag.
 
 If observed source delays exceed the configured overlap, status raises a data-
 quality warning and operators widen the overlap before trusting completeness.
@@ -628,15 +687,45 @@ operations in `pending` or `unknown` state:
 3. moves old pending operations to `unknown` after a configurable horizon; and
 4. permits a later terminal event to correct `unknown` to a terminal outcome.
 
-The horizon must exceed the collection ingestion lag and overlap. Expiration is
-not deletion and does not assert failure; it means no terminal event was found
-within the evidence available. This is the "park unfinished operations until a
-terminal event arrives" store: non-terminal operations remain visible and are
-completed by a later overlap re-query rather than by arrival-order guessing.
+The horizon must exceed the overlap. Expiration is not deletion and does not
+assert failure; it means no terminal event was found within the evidence
+available. This is the "park unfinished operations until a terminal event
+arrives" store: non-terminal operations remain visible and are completed by a
+later overlap re-query rather than by arrival-order guessing.
+
+### 10.4 Run outcomes and progress
+
+Collector run outcomes use the shared Data Collection vocabulary:
+
+- `completed` means every planned subscription succeeded, including a no-work
+  plan whose action is `up-to-date`;
+- `partial` means at least one subscription committed coverage and at least one
+  source or reconciliation operation failed; and
+- `failed` means no subscription committed useful progress or a collector-wide
+  failure terminated orchestration.
+
+Busy is not a collector outcome. The dispatcher rejects a concurrent start
+before an Activity Log orchestration or run-history row is created.
+
+Status exposes the stable `targetStart` and `targetEnd`, subscriptions with any
+coverage, subscriptions fully at the current target, and subscriptions still
+due. Subscription work uses a bounded sliding pool: each completion advances
+progress immediately and starts the next due subscription without waiting for
+the other in-flight subscriptions.
+
+### 10.5 Future source providers
+
+The current source provider is the Azure Activity Log REST API. A future
+Log Analytics provider may read equivalent management events from a configured
+workspace when diagnostic settings make them available. That provider is out of
+scope here; it must feed the same normalized source envelope and use an explicit
+source-specific checkpoint. Coverage from different providers must not be
+silently combined.
 
 ### 10.3 Rebuild and version reconciliation
 
-Re-derivation always reads the retained inline payloads. It is triggered two
+Re-derivation always reads the retained payloads, transparently rehydrating
+spilled blobs. It is triggered two
 ways, reconciled differently:
 
 - **Projection, normalization, or matching change (or a `reprojection-pending`
@@ -646,7 +735,7 @@ ways, reconciled differently:
   recipe's current version against the per-(subscription, recipe)
   `materializedVersion` watermark; where it is behind — or where rows are
   flagged — it enqueues a **bounded, throttled backfill** that re-derives
-  operations in place from the **retained inline payloads**. The backfill is
+  operations in place from the **retained payloads**. The backfill is
   idempotent (keyed by operation identity) and drains over several cycles rather
   than blocking the forward path. No Azure re-fetch is needed, so it works past
   the 90-day source window. A row that keeps failing on deterministic input
@@ -675,6 +764,9 @@ Subscription, VM, VMSS, Capacity Reservation, and allocation-history
 materializers are outside this specification. Their product requirements,
 validation needs, and open design decisions are tracked in
 [Activity Log Materializers](../planning/activity-log-materializers.md).
+The Allocation Events query-time read model is already implemented and is not
+one of these deferred materializers; see
+[Allocation Events](allocation-events.md).
 
 ## Outstanding Validation
 

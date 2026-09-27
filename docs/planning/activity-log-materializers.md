@@ -58,6 +58,19 @@ window, current Resource Graph state is the fallback. Zone must never be inferre
 from a Capacity Reservation Group name. Delete and recreate events establish
 resource-generation boundaries.
 
+The `vm-configuration` collection recipe makes source-stage ownership explicit:
+applied configuration fields come from the `Accepted` event, while provider
+error code and message come from the `Failed` terminal event. Assembly merges
+those projections into one operation. Generic parent errors such as
+`ResourceOperationFailure` and their specific nested details remain distinct.
+
+Version 3 preserves both levels instead of replacing the parent: top-level
+code/message, first-detail code/message, detail count, recursive code list, and
+a hierarchy-wide confirmed-allocation boolean are queryable columns. The full
+sanitized `error.details` array is retained independently with deterministic
+Blob spill for oversized values. Lifecycle and VM configuration recipes share
+this error model.
+
 ## VMSS Configuration History
 
 Uniform VMSS is the first required mode, without preventing later Flexible VMSS

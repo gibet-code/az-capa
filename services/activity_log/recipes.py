@@ -25,20 +25,39 @@ class ProjectedField:
     """A source path promoted to a typed, queryable column on the operation row.
 
     ``path`` is resolved against the event ``properties`` bag; embedded JSON
-    strings (``responseBody``, ``statusMessage``) are parsed while descending.
-    ``on_status`` restricts derivation to events whose status folds to that
-    value (e.g. ``ErrorCode`` only on ``Failed``).
+    strings (``responseBody``, ``statusMessage``) are parsed while descending,
+    and numeric segments index arrays. ``fallback_paths`` are tried in order
+    when the primary path is absent. ``on_status`` restricts derivation to
+    events whose status folds to that value (e.g. ``ErrorCode`` only on
+    ``Failed``).
     """
 
     column: str
     path: str
     on_status: str | None = None
+    fallback_paths: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.column:
             raise ValueError("ProjectedField.column must be non-empty")
         if not self.path:
             raise ValueError("ProjectedField.path must be non-empty")
+        if any(not path for path in self.fallback_paths):
+            raise ValueError("ProjectedField.fallback_paths must contain only non-empty paths")
+
+
+@dataclass(frozen=True)
+class ErrorProjection:
+    """Projection contract for a structured Activity Log error."""
+
+    path: str
+    on_status: str
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise ValueError("ErrorProjection.path must be non-empty")
+        if not self.on_status:
+            raise ValueError("ErrorProjection.on_status must be non-empty")
 
 
 @dataclass(frozen=True)
@@ -49,6 +68,7 @@ class Recipe:
     operation_names: tuple[str, ...] = ()
     statuses: tuple[str, ...] | None = None
     projected_fields: tuple[ProjectedField, ...] = ()
+    error_projection: ErrorProjection | None = None
     # Whether the full source event is retained for later re-projection; recipes
     # that only need the outcome (lifecycle actions) set this False to save storage.
     retain_payload: bool = True
@@ -68,57 +88,66 @@ class Recipe:
             raise ValueError(f"Recipe {self.id!r} has duplicate projected columns")
 
 
+_VM_ERROR_PROJECTION = ErrorProjection(
+    path="statusMessage.error",
+    on_status="Failed",
+)
+
+
 _RECIPES: tuple[Recipe, ...] = (
     Recipe(
         id="vm-configuration",
-        version=1,
+        version=3,
         resource_types=("microsoft.compute/virtualmachines",),
         operation_names=(
             "microsoft.compute/virtualmachines/write",
             "microsoft.compute/virtualmachines/delete",
         ),
         projected_fields=(
-            ProjectedField("VmSize", "responseBody.properties.hardwareProfile.vmSize"),
-            ProjectedField("Location", "responseBody.location"),
-            ProjectedField("Zones", "responseBody.zones"),
-            ProjectedField("ProvisioningState", "responseBody.properties.provisioningState"),
-            ProjectedField("CapacityReservationGroupId", "responseBody.properties.capacityReservation.capacityReservationGroup.id"),
-            ProjectedField("ErrorCode", "statusMessage.error.code", on_status="Failed"),
+            ProjectedField(
+                "VmSize",
+                "responseBody.properties.hardwareProfile.vmSize",
+                on_status="Accepted",
+            ),
+            ProjectedField("Location", "responseBody.location", on_status="Accepted"),
+            ProjectedField("Zones", "responseBody.zones", on_status="Accepted"),
+            ProjectedField(
+                "ProvisioningState",
+                "responseBody.properties.provisioningState",
+                on_status="Accepted",
+            ),
+            ProjectedField(
+                "CapacityReservationGroupId",
+                "responseBody.properties.capacityReservation.capacityReservationGroup.id",
+                on_status="Accepted",
+            ),
         ),
+        error_projection=_VM_ERROR_PROJECTION,
     ),
     Recipe(
         id="vm-lifecycle",
-        version=1,
+        version=3,
         resource_types=("microsoft.compute/virtualmachines",),
         operation_names=(
             "microsoft.compute/virtualmachines/start/action",
             "microsoft.compute/virtualmachines/deallocate/action",
             "microsoft.compute/virtualmachines/reapply/action",
             "microsoft.compute/virtualmachines/redeploy/action",
+            "microsoft.compute/virtualmachines/restart/action",
         ),
-        projected_fields=(
-            ProjectedField("ErrorCode", "statusMessage.error.code", on_status="Failed"),
-            ProjectedField("ErrorMessage", "statusMessage.error.message", on_status="Failed"),
-        ),
+        error_projection=_VM_ERROR_PROJECTION,
         retain_payload=False,
     ),
-    Recipe(
-        id="vmss-configuration",
-        version=1,
-        resource_types=("microsoft.compute/virtualmachinescalesets",),
-        operation_names=(
-            "microsoft.compute/virtualmachinescalesets/write",
-            "microsoft.compute/virtualmachinescalesets/delete",
-        ),
-        projected_fields=(
-            ProjectedField("SkuName", "responseBody.sku.name"),
-            ProjectedField("Capacity", "responseBody.sku.capacity"),
-            ProjectedField("Location", "responseBody.location"),
-            ProjectedField("Zones", "responseBody.zones"),
-            ProjectedField("ProvisioningState", "responseBody.properties.provisioningState"),
-            ProjectedField("ErrorCode", "statusMessage.error.code", on_status="Failed"),
-        ),
-    ),
+    # Disabled until VMSS configuration is consumed by a report.
+    # Recipe(
+    #     id="vmss-configuration",
+    #     version=1,
+    #     resource_types=("microsoft.compute/virtualmachinescalesets",),
+    #     operation_names=(
+    #         "microsoft.compute/virtualmachinescalesets/write",
+    #         "microsoft.compute/virtualmachinescalesets/delete",
+    #     ),
+    # ),
     Recipe(
         id="crg-configuration",
         version=1,
@@ -150,12 +179,12 @@ _RECIPES: tuple[Recipe, ...] = (
             ProjectedField("ErrorCode", "statusMessage.error.code", on_status="Failed"),
         ),
     ),
-    Recipe(
-        id="subscription-registration",
-        version=1,
-        operation_names=("microsoft.management/register/action",),
-        projected_fields=(),
-    ),
+    # Disabled until subscription registration is consumed by a report.
+    # Recipe(
+    #     id="subscription-registration",
+    #     version=1,
+    #     operation_names=("microsoft.management/register/action",),
+    # ),
 )
 
 _BY_ID: dict[str, Recipe] = {recipe.id: recipe for recipe in _RECIPES}

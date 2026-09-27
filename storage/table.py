@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
+import time
 from collections.abc import Iterable, Iterator, Sequence
 from typing import Callable, TypeVar
 
-from azure.core.exceptions import ResourceExistsError
+from azure.core.exceptions import ResourceExistsError, ServiceRequestError, ServiceResponseError
 from azure.data.tables import TableClient, TableServiceClient
 
 from core import credentials, settings
@@ -18,6 +20,8 @@ MAX_STRING_PROPERTY_CHARS = 30_000
 T = TypeVar("T")
 _client_lock = threading.Lock()
 _service_clients = {}
+_local_bulk_write_gate = threading.BoundedSemaphore(1)
+_local_transaction_retry_delays = (3, 10)
 
 
 def table_service_client() -> TableServiceClient:
@@ -39,6 +43,32 @@ def table_service_client() -> TableServiceClient:
             client = TableServiceClient(endpoint=key[1], credential=credentials.get_credential())
         _service_clients[key] = client
         return client
+
+
+def submit_table_transaction(table: TableClient, operations: list) -> None:
+    """Submit a bulk transaction, serializing and retrying only for local Azurite."""
+    if not credentials.is_running_locally():
+        table.submit_transaction(operations)
+        return
+
+    with _local_bulk_write_gate:
+        for attempt in range(len(_local_transaction_retry_delays) + 1):
+            try:
+                table.submit_transaction(operations)
+                return
+            except (ServiceRequestError, ServiceResponseError):
+                if attempt >= len(_local_transaction_retry_delays):
+                    raise
+                delay = _local_transaction_retry_delays[attempt]
+                logging.warning(
+                    "Local Table transaction transport failure; retrying %d operation(s) "
+                    "in %d seconds (%d/%d).",
+                    len(operations),
+                    delay,
+                    attempt + 1,
+                    len(_local_transaction_retry_delays),
+                )
+                time.sleep(delay)
 
 
 class LazyTableClient:

@@ -56,6 +56,81 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("switchLocalRole(role)", index)
         self.assertIn("['Admin', 'User', 'None']", index)
 
+    def test_allocation_events_vm_inventory_is_wired_to_shared_table_architecture(self):
+        index = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+        scope_js = (WEB_DIR / "js" / "features" / "scope.js").read_text(encoding="utf-8")
+        feature = (WEB_DIR / "js" / "features" / "allocation-events.js").read_text(encoding="utf-8")
+        web_bp = (WEB_DIR.parent / "functions" / "web_bp.py").read_text(encoding="utf-8")
+
+        self.assertIn('go(\'allocation-events\')', index)
+        self.assertIn('page === \'allocation-events\'', index)
+        self.assertIn('src="js/features/allocation-events.js"', index)
+        self.assertIn('hash === "allocation-events"', app_js)
+        self.assertIn("createAllocationEventsFeature()", app_js)
+        self.assertIn('this.page === "allocation-events"', scope_js)
+        self.assertIn("loadAllocationEventVms(true)", scope_js)
+        self.assertIn('requestJson("/api/allocation-events/vms"', feature)
+        self.assertIn("seedResourceTableFilterOptions(", feature)
+        self.assertIn("filterTableRows(", feature)
+        self.assertIn("searchTableRows(", feature)
+        self.assertIn("sortTableRows(", feature)
+        self.assertIn("paginateTableRows(", feature)
+        self.assertIn('"js/features/allocation-events.js"', web_bp)
+        self.assertIn(
+            '<th class="tooltip-header" :aria-sort="allocationVmSort.key === \'deploymentType\'',
+            index,
+        )
+        self.assertEqual(index.count('class="vm-table allocation-events-table'), 2)
+        self.assertIn('class="odcr-usage-controls allocation-events-controls"', index)
+        self.assertIn('aria-label="Allocation success period"', index)
+        self.assertIn("<span>Allocation failures only</span>", index)
+        self.assertIn("<span>VMs with failures only</span>", index)
+        self.assertIn("cycleAllocationVmSort('allocationSuccess')", index)
+        self.assertIn('class="allocation-success-cell"', index)
+        self.assertIn("allocationVmLastAllocationText(vm)", index)
+        self.assertIn("allocationVmLastFailureText(vm)", index)
+        self.assertIn("openAllocationTimeline(vm, $event.currentTarget)", index)
+        self.assertIn('id="allocation-timeline-title"', index)
+        self.assertIn("allocationTimelineGroups", index)
+        self.assertIn("allocationTimelineDetailEntries(event)", index)
+        self.assertIn("allocationTimelineZoneDisplay(event)", index)
+        self.assertIn("allocationTimelineErrorJson(event)", index)
+        self.assertIn("event.error.hasAllocationFailure", index)
+        self.assertIn("View details JSON", index)
+        self.assertIn("Deployment zones", index)
+        self.assertIn("event.recipe === 'current-state'", index)
+        self.assertIn('requestJson("/api/allocation-events/timeline"', feature)
+        self.assertIn("_allocationTimelineRequests.cancel()", feature)
+        self.assertIn('allocationVmPeriod: "30d"', feature)
+        self.assertIn("allocationVmConfirmedFailuresOnly: true", feature)
+        self.assertIn("allocationVmFailuresOnly: false", feature)
+        self.assertIn("toggleAllocationVmFailuresOnly()", feature)
+        self.assertIn("confirmedAllocationFailures", feature)
+        self.assertIn("formatDateTimeWithTimeZone", feature)
+        self.assertIn("Intl.DateTimeFormat().resolvedOptions().timeZone", app_js)
+
+        vm_styles = (WEB_DIR / "styles" / "vm-coverage.css").read_text(encoding="utf-8")
+        self.assertRegex(
+            vm_styles,
+            r"\.allocation-events-table th:first-child,\s*"
+            r"\.allocation-events-table td:first-child \{[^}]*"
+            r"width: 230px;[^}]*min-width: 230px;[^}]*max-width: 230px;",
+        )
+        self.assertRegex(
+            vm_styles,
+            r"\.allocation-events-table th:nth-child\(2\),\s*"
+            r"\.allocation-events-table td:nth-child\(2\) \{[^}]*left: 230px;",
+        )
+        self.assertIn(".allocation-period-switch", vm_styles)
+        self.assertIn(".allocation-success-counts", vm_styles)
+        self.assertIn(".allocation-success-rate", vm_styles)
+
+        drawer_styles = (WEB_DIR / "styles" / "drawers.css").read_text(encoding="utf-8")
+        self.assertIn(".allocation-timeline-drawer", drawer_styles)
+        self.assertIn(".allocation-timeline-rail::after", drawer_styles)
+        self.assertIn(".allocation-timeline-gap", drawer_styles)
+
     def test_global_filter_scroll_ownership_is_bounded(self):
         base_styles = (WEB_DIR / "styles" / "base.css").read_text(encoding="utf-8")
 

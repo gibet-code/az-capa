@@ -34,6 +34,7 @@ from .table import (
     MAX_TRANSACTION_OPERATIONS as _MAX_BATCH,
     decode_json_array_properties,
     encode_json_array_properties,
+    submit_table_transaction,
     table_service_client,
 )
 
@@ -175,7 +176,9 @@ class UsageStore:
         for entities in by_partition.values():
             for start in range(0, len(entities), _MAX_BATCH):
                 chunk = entities[start:start + _MAX_BATCH]
-                table.submit_transaction([("upsert", e, {"mode": mode}) for e in chunk])
+                submit_table_transaction(
+                    table, [("upsert", e, {"mode": mode}) for e in chunk]
+                )
                 written += len(chunk)
         self._upsert_summary_records(records)
         logging.info("Upserted %d daily usage record(s).", written)
@@ -227,7 +230,7 @@ class UsageStore:
         for entities in by_partition.values():
             for start in range(0, len(entities), _MAX_BATCH):
                 chunk = entities[start:start + _MAX_BATCH]
-                table.submit_transaction([
+                submit_table_transaction(table, [
                     ("upsert", entity, {"mode": UpdateMode.MERGE})
                     for entity in chunk
                 ])
@@ -275,7 +278,10 @@ class UsageStore:
         for pk, row_keys in by_partition.items():
             for start in range(0, len(row_keys), _MAX_BATCH):
                 chunk = row_keys[start:start + _MAX_BATCH]
-                table.submit_transaction([("delete", {"PartitionKey": pk, "RowKey": rk}) for rk in chunk])
+                submit_table_transaction(
+                    table,
+                    [("delete", {"PartitionKey": pk, "RowKey": rk}) for rk in chunk],
+                )
                 deleted += len(chunk)
         summary_table = self._summary_table()
         if summary_table is not None:
@@ -285,7 +291,7 @@ class UsageStore:
                 ))
                 for start in range(0, len(summary_rows), _MAX_BATCH):
                     chunk = summary_rows[start:start + _MAX_BATCH]
-                    summary_table.submit_transaction([
+                    submit_table_transaction(summary_table, [
                         ("delete", {"PartitionKey": row["PartitionKey"], "RowKey": row["RowKey"]})
                         for row in chunk
                     ])

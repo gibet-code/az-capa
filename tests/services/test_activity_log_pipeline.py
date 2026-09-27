@@ -14,12 +14,13 @@ from services.activity_log.pipeline import (
     _row_needs_reconcile,
     assemble_operations,
 )
-from services.activity_log.projection import compress_payload
+from services.activity_log.projection import compress_payload, decompress_json
 from datetime import timedelta
 
 _NOW = datetime(2026, 9, 7, 12, 0, tzinfo=timezone.utc)
-_CUTOFF = "2026-09-07T11:40:00Z"  # now - 20 min ingestion lag
-_HISTORICAL_START = "2026-08-08T11:40:00Z"  # cutoff - 30 days
+_TARGET_END = "2026-09-07T00:00:00Z"
+_QUERY_END = "2026-09-06T23:59:59.999Z"
+_HISTORICAL_START = "2026-08-08T00:00:00Z"
 
 
 def _vm_event(event_id: str, status: str, correlation: str = "corr-1", body: dict | None = None) -> dict:
@@ -66,8 +67,59 @@ class AssembleOperationsTests(unittest.TestCase):
         self.assertEqual("eastus", operation["Columns"]["Location"])
         self.assertEqual("succeeded", operation["Outcome"])
         self.assertEqual(ASSEMBLER_VERSION, operation["AssemblerVersion"])
-        self.assertEqual(1, operation["RecipeVersion"])
+        self.assertEqual(3, operation["RecipeVersion"])
         self.assertIsNotNone(operation["AppliedPayloadGz"])
+
+    def test_vm_configuration_merges_accepted_state_and_specific_failed_detail(self):
+        accepted = _vm_event("e1", "Accepted", body={
+            "location": "eastus",
+            "properties": {
+                "hardwareProfile": {"vmSize": "Standard_D2s_v5"},
+                "provisioningState": "Creating",
+            },
+        })
+        failed = _vm_event("e2", "Failed")
+        failed["properties"]["statusMessage"] = json.dumps({
+            "error": {
+                "code": "ResourceOperationFailure",
+                "message": "The resource operation failed.",
+                "details": [{
+                    "code": "VMMarketplaceInvalidInput",
+                    "message": "Plan information is required.",
+                }],
+            }
+        })
+
+        operation = assemble_operations([accepted, failed])[0]
+
+        self.assertEqual("failed", operation["Outcome"])
+        self.assertEqual("Creating", operation["Columns"]["ProvisioningState"])
+        self.assertEqual("ResourceOperationFailure", operation["Columns"]["ErrorCode"])
+        self.assertEqual("The resource operation failed.", operation["Columns"]["ErrorMessage"])
+        self.assertEqual("VMMarketplaceInvalidInput", operation["Columns"]["ErrorDetailCode"])
+        self.assertEqual(
+            "Plan information is required.",
+            operation["Columns"]["ErrorDetailMessage"],
+        )
+        self.assertEqual(3, operation["RecipeVersion"])
+        self.assertEqual(
+            [{
+                "code": "VMMarketplaceInvalidInput",
+                "message": "Plan information is required.",
+            }],
+            decompress_json(operation["ErrorDetailsGz"]),
+        )
+
+    def test_failed_configuration_does_not_retain_terminal_raw_event(self):
+        failed = _vm_event("e1", "Failed")
+        failed["properties"]["statusMessage"] = json.dumps({
+            "error": {"code": "Failure", "details": []},
+        })
+
+        operation = assemble_operations([failed])[0]
+
+        self.assertIsNone(operation["AppliedPayloadGz"])
+        self.assertEqual([], decompress_json(operation["ErrorDetailsGz"]))
 
     def test_lifecycle_events_are_not_payload_retained(self):
         accepted = _vm_event("l1", "Accepted")
@@ -83,6 +135,33 @@ class AssembleOperationsTests(unittest.TestCase):
         self.assertIsNotNone(operation["AppliedEventId"])
         self.assertIsNone(operation["AppliedPayloadGz"])
         self.assertIsNone(operation["PayloadEncoding"])
+
+    def test_lifecycle_failure_projects_specific_error_detail(self):
+        failed = _vm_event("l1", "Failed")
+        failed["operationName"] = "microsoft.compute/virtualmachines/restart/action"
+        failed["properties"]["statusMessage"] = json.dumps({
+            "error": {
+                "code": "ResourceOperationFailure",
+                "message": "The resource operation failed.",
+                "details": [{
+                    "code": "AllocationFailed",
+                    "message": "The VM allocation failed.",
+                }],
+            }
+        })
+
+        operations = assemble_operations([failed])
+
+        self.assertEqual(1, len(operations))
+        operation = operations[0]
+        self.assertEqual("failed", operation["Outcome"])
+        self.assertEqual("ResourceOperationFailure", operation["Columns"]["ErrorCode"])
+        self.assertEqual("AllocationFailed", operation["Columns"]["ErrorDetailCode"])
+        self.assertEqual("The VM allocation failed.", operation["Columns"]["ErrorDetailMessage"])
+        self.assertTrue(operation["Columns"]["HasAllocationFailure"])
+        self.assertEqual(3, operation["RecipeVersion"])
+        self.assertIsNone(operation["AppliedPayloadGz"])
+        self.assertIsNotNone(operation["ErrorDetailsGz"])
 
 
 class ResolvePlanTests(unittest.TestCase):
@@ -115,25 +194,82 @@ class ResolvePlanTests(unittest.TestCase):
         self.assertEqual(list(recipes.server_operations(recipes.all_recipes())), plan["operations"])
         unit = plan["workUnits"][0]
         self.assertEqual("sub-1", unit["subscriptionId"])
-        self.assertEqual(_HISTORICAL_START, unit["start"])
-        self.assertEqual(_CUTOFF, unit["end"])
-        state = plan["newState"][0]
+        self.assertEqual(
+            [{"start": _HISTORICAL_START, "end": _QUERY_END}],
+            unit["windows"],
+        )
+        state = unit["coverage"]
         self.assertEqual(self.recipe_ids, state["enabledRecipeIds"])
         self.assertEqual(self.versions, state["materializedRecipeVersions"])
+        self.assertEqual(_TARGET_END, state["coverageEnd"])
+        self.assertEqual(_TARGET_END, plan["targetEnd"])
 
-    def test_refresh_uses_overlap_window_when_no_drift(self):
+    def test_incremental_plan_uses_overlap_only_for_subscription_behind_target(self):
         self.store.list_coverage.return_value = [{
             "subscriptionId": "sub-1",
             "coverageStart": "2026-06-01T00:00:00Z",
-            "coverageEnd": "2026-09-06T11:40:00Z",
+            "coverageEnd": "2026-09-06T00:00:00Z",
             "enabledRecipeIds": self.recipe_ids,
             "materializedRecipeVersions": self.versions,
         }]
 
         plan = self.pipeline.resolve_plan({})
 
-        self.assertEqual("refresh", plan["reason"])
-        self.assertEqual("2026-09-05T11:40:00Z", plan["workUnits"][0]["start"])  # coverageEnd - 24h
+        self.assertEqual("incremental", plan["reason"])
+        self.assertEqual(
+            [{"start": "2026-09-05T00:00:00Z", "end": _QUERY_END}],
+            plan["workUnits"][0]["windows"],
+        )
+
+    def test_up_to_date_subscription_is_not_scheduled(self):
+        self.store.list_coverage.return_value = [{
+            "subscriptionId": "sub-1",
+            "coverageStart": "2026-08-08T00:00:00Z",
+            "coverageEnd": _TARGET_END,
+            "enabledRecipeIds": self.recipe_ids,
+            "materializedRecipeVersions": self.versions,
+        }]
+
+        plan = self.pipeline.resolve_plan({})
+
+        self.assertEqual("noop", plan["action"])
+        self.assertEqual("up-to-date", plan["reason"])
+        self.assertEqual([], plan["workUnits"])
+
+    def test_lookback_expansion_collects_only_missing_historical_head(self):
+        self.store.list_coverage.return_value = [{
+            "subscriptionId": "sub-1",
+            "coverageStart": "2026-08-20T00:00:00Z",
+            "coverageEnd": _TARGET_END,
+            "enabledRecipeIds": self.recipe_ids,
+            "materializedRecipeVersions": self.versions,
+        }]
+
+        plan = self.pipeline.resolve_plan({})
+
+        self.assertEqual("historical-backfill", plan["reason"])
+        self.assertEqual(
+            [{"start": _HISTORICAL_START, "end": "2026-08-20T00:00:00Z"}],
+            plan["workUnits"][0]["windows"],
+        )
+        self.assertEqual(_TARGET_END, plan["workUnits"][0]["coverage"]["coverageEnd"])
+
+    def test_head_and_tail_gaps_are_independent_windows(self):
+        self.store.list_coverage.return_value = [{
+            "subscriptionId": "sub-1",
+            "coverageStart": "2026-08-20T00:00:00Z",
+            "coverageEnd": "2026-09-05T00:00:00Z",
+            "enabledRecipeIds": self.recipe_ids,
+            "materializedRecipeVersions": self.versions,
+        }]
+
+        plan = self.pipeline.resolve_plan({})
+
+        self.assertEqual("historical-backfill", plan["reason"])
+        self.assertEqual([
+            {"start": _HISTORICAL_START, "end": "2026-08-20T00:00:00Z"},
+            {"start": "2026-09-04T00:00:00Z", "end": _QUERY_END},
+        ], plan["workUnits"][0]["windows"])
 
     def test_version_drift_forces_reconcile_from_historical_start(self):
         self.store.list_coverage.return_value = [{
@@ -147,7 +283,10 @@ class ResolvePlanTests(unittest.TestCase):
         plan = self.pipeline.resolve_plan({})
 
         self.assertEqual("reconcile", plan["reason"])
-        self.assertEqual(_HISTORICAL_START, plan["workUnits"][0]["start"])
+        self.assertEqual(
+            [{"start": _HISTORICAL_START, "end": _QUERY_END}],
+            plan["workUnits"][0]["windows"],
+        )
 
 
 class PipelineIoTests(unittest.TestCase):
@@ -155,8 +294,8 @@ class PipelineIoTests(unittest.TestCase):
         self.store = MagicMock()
         self.pipeline = ActivityLogPipeline(self.store)
         self.identity_patch = patch("services.activity_log.pipeline.for_backend_operation")
-        identity = self.identity_patch.start()
-        identity.return_value.get_token.return_value = "token"
+        self.identity = self.identity_patch.start()
+        self.identity.return_value.get_token.return_value = "token"
 
     def tearDown(self):
         patch.stopall()
@@ -199,6 +338,17 @@ class PipelineIoTests(unittest.TestCase):
         self.assertEqual("error", result["status"])
         self.assertIn("boom", result["error"])
 
+    def test_fetch_and_store_page_returns_error_when_token_acquisition_fails(self):
+        self.identity.return_value.get_token.side_effect = RuntimeError("az login required")
+
+        result = self.pipeline.fetch_and_store_page(
+            {"subscriptionId": "sub-1", "start": "s", "end": "e"}
+        )
+
+        self.assertEqual("error", result["status"])
+        self.assertIn("az login required", result["error"])
+        self.store.upsert_operations.assert_not_called()
+
     def test_write_state_sets_coverage_per_subscription(self):
         result = self.pipeline.write_state([
             {"subscriptionId": "sub-1", "coverageStart": "a", "coverageEnd": "b"},
@@ -212,10 +362,13 @@ class PipelineIoTests(unittest.TestCase):
         self.assertIn("lastUpsertAt", coverage)
 
     def test_status_aggregates_coverage(self):
+        versions = {recipe.id: recipe.version for recipe in recipes.all_recipes()}
         self.store.list_coverage.return_value = [{
             "subscriptionId": "sub-1",
-            "coverageStart": "2026-06-01T00:00:00Z",
-            "coverageEnd": "2026-09-06T11:40:00Z",
+            "coverageStart": _HISTORICAL_START,
+            "coverageEnd": _TARGET_END,
+            "enabledRecipeIds": sorted(versions),
+            "materializedRecipeVersions": versions,
         }]
         with patch("services.activity_log.pipeline._utc_now", return_value=_NOW), \
                 patch.object(ActivityLogPipeline, "_scope", return_value={"subs": ["sub-1"], "configSelectors": {}}):
@@ -223,15 +376,18 @@ class PipelineIoTests(unittest.TestCase):
 
         self.assertTrue(status["hasData"])
         self.assertTrue(status["isRefreshEnabled"])
-        self.assertEqual("2026-09-06T11:40:00Z", status["coverageEnd"])
+        self.assertEqual(_TARGET_END, status["coverageEnd"])
+        self.assertEqual(_TARGET_END, status["targetEnd"])
         self.assertEqual(1, status["subscriptionsCovered"])
+        self.assertEqual(1, status["subscriptionsAtTarget"])
+        self.assertEqual(0, status["subscriptionsDue"])
 
 
 class ReconcileTests(unittest.TestCase):
     _HORIZON = timedelta(hours=48)
 
     def _vm_operation(self, **overrides) -> dict:
-        payload = compress_payload(_vm_event("e1", "Succeeded", body={
+        payload = compress_payload(_vm_event("e1", "Accepted", body={
             "location": "eastus",
             "properties": {"hardwareProfile": {"vmSize": "Standard_D2s_v5"}},
         }))
@@ -244,7 +400,7 @@ class ReconcileTests(unittest.TestCase):
             "LastEventTime": "2026-09-01T00:00:00Z",
             "ReprojectionPending": False,
             "AssemblerVersion": ASSEMBLER_VERSION,
-            "RecipeVersion": 1,
+            "RecipeVersion": 3,
         }
         operation.update(overrides)
         return operation
@@ -262,14 +418,20 @@ class ReconcileTests(unittest.TestCase):
         self.assertTrue(_row_needs_reconcile(pending_aged, _NOW, self._HORIZON))
 
     def test_reconcile_reprojects_stale_operation(self):
-        operation = self._vm_operation(AssemblerVersion=0, RecipeVersion=0, Columns={})
+        operation = self._vm_operation(
+            AssemblerVersion=0,
+            RecipeVersion=0,
+            Columns={"ErrorCode": "Parent", "ErrorDetailCode": "AllocationFailed"},
+        )
 
         changed = _reconcile_operation(operation, _NOW, self._HORIZON)
 
         self.assertTrue(changed)
         self.assertEqual("Standard_D2s_v5", operation["Columns"]["VmSize"])
+        self.assertEqual("Parent", operation["Columns"]["ErrorCode"])
+        self.assertEqual("AllocationFailed", operation["Columns"]["ErrorDetailCode"])
         self.assertEqual(ASSEMBLER_VERSION, operation["AssemblerVersion"])
-        self.assertEqual(1, operation["RecipeVersion"])
+        self.assertEqual(3, operation["RecipeVersion"])
 
     def test_reconcile_ages_pending_operation(self):
         operation = self._vm_operation(Outcome="pending", LastEventTime="2026-01-01T00:00:00Z")

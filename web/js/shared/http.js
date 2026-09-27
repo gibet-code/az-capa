@@ -40,5 +40,11 @@ function createLatestRequest() {
     finish(id) {
       if (id === sequence) activeController = null;
     },
+
+    cancel() {
+      sequence += 1;
+      if (activeController) activeController.abort();
+      activeController = null;
+    },
   };
 }

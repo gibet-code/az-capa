@@ -1,0 +1,11 @@
+{
+    "files.watcherExclude": {
+        "**/.azurite-standalone/**": true,
+        "**/.git/**": true,
+        "**/.venv/**": true
+    },
+    "search.exclude": {
+        "**/.azurite-standalone/**": true,
+        "**/.venv/**": true
+    }
+}

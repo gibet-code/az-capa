@@ -15,7 +15,7 @@ The app registration defines two roles with stable IDs and
 
 | Role | Application capabilities |
 |---|---|
-| `User` | Use ODCR coverage and usage reports and update shared coverage decisions for VMs that pass App Scope and user-visibility checks. |
+| `User` | Use Allocation Events, ODCR coverage, and ODCR usage reports, and update shared coverage decisions for VMs that pass App Scope and user-visibility checks. |
 | `Admin` | Everything available to `User`, plus Settings, Business Context administration, pipeline status/refresh/flush operations, and Notifications. |
 
 Entra app roles do not inherit. The application policy deliberately treats
@@ -35,7 +35,7 @@ used only for calls made as the signed-in user and is never decoded to authorize
 an application operation. App roles cannot expand Azure RBAC, and Azure RBAC
 does not grant application capabilities.
 
-The effective ODCR report population remains:
+The effective interactive report population remains:
 
 ```text
 Application Scope AND signed-in user visibility AND Global Filters
@@ -56,7 +56,7 @@ history purge, and Azure calls. HTTP routes use the following policy:
 |---|---|
 | Static SPA and `/api/me` | Easy Auth authentication; `/api/me` returns normalized identity and capabilities. |
 | `/api/me/role` | Local-only; returns 404 in Azure. |
-| ODCR scope, filter catalogue, coverage, usage, and coverage-decision routes | User policy. |
+| Allocation Events, ODCR scope, filter catalogue, coverage, usage, and coverage-decision routes | User policy. |
 | Settings and App Scope diagnostics | Admin policy. |
 | Pipeline status, refresh, and flush routes | Admin policy. |
 | Notifications GET and DELETE routes | Admin policy. |
@@ -65,6 +65,12 @@ history purge, and Azure calls. HTTP routes use the following policy:
 
 Reports may consume published Business Context enrichment without exposing its
 administration APIs to `User`.
+
+The Allocation Events timeline additionally authorizes the requested VM
+resource itself. After the User-policy guard and App Scope check, the service
+must find that exact VM through Resource Graph using the caller's token before
+it reads Activity Log storage. Missing or invisible resources return the same
+not-found response and do not reveal whether stored history exists.
 
 ## Backend managed identity
 
@@ -116,7 +122,7 @@ az role assignment create `
 `/api/me` is the single normalized identity and capability contract in Azure and
 locally. The SPA resolves it before loading protected data:
 
-- `User` sees ODCR reports only.
+- `User` sees Allocation Events and ODCR reports.
 - `Admin` also sees Settings and Notifications.
 - A principal with neither role sees the denied state.
 
@@ -144,7 +150,7 @@ The complete provisioning and operational verification procedure is in
 |---|---|
 | Missing or malformed principal | HTTP 401 from application APIs. |
 | No role or unknown role | HTTP 403 from protected APIs. |
-| `User` | ODCR reads and coverage-decision writes succeed; Admin APIs return 403. |
+| `User` | Allocation Events and ODCR reads and coverage-decision writes succeed; Admin APIs return 403. |
 | `Admin` | User and Admin surfaces succeed. |
 | Unassigned tenant user | Entra rejects sign-in when Assignment required is enabled. |
 

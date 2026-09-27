@@ -85,6 +85,411 @@ console.log(JSON.stringify(locationTableOptions([
             result,
         )
 
+    def test_allocation_events_vm_list_uses_shared_filters_sorting_and_pagination(self):
+        result = self.run_model_scenario("""
+const feature = createAllocationEventsFeature();
+feature.zoneDisplayMode = "logical";
+Object.defineProperty(feature, "zoneDisplayPrefix", {
+  get() { return this.zoneDisplayMode === "physical" ? "Phy" : "Log"; },
+});
+feature.allocationVmMetadata = { businessContext: { fields: { service: "Service" } } };
+feature.allocationVms = [
+  { id: "3", name: "vm-c", subscriptionId: "sub-b", subscriptionName: "B", resourceGroup: "rg-2",
+    location: "eastus", locationDisplayName: "East US", logicalZone: "1", physicalZone: "3", vmSize: "Standard_D4s_v5",
+    powerState: "VM deallocated", businessContext: { service: "Payments" } },
+  { id: "1", name: "vm-a", subscriptionId: "sub-a", subscriptionName: "A", resourceGroup: "rg-1",
+    location: "westeurope", locationDisplayName: "West Europe", logicalZone: null, vmSize: "Standard_D2s_v5",
+    powerState: "VM running", businessContext: { service: "Core" } },
+  { id: "2", name: "vm-b", subscriptionId: "sub-a", subscriptionName: "A", resourceGroup: "rg-1",
+    location: "eastus", locationDisplayName: "East US", logicalZone: "2", physicalZone: "1", vmSize: "Standard_D2s_v5",
+    powerState: "VM running", businessContext: { service: "Payments" } },
+];
+feature.syncAllocationVmBusinessContextFilters();
+feature.seedAllocationVmFilterOptions();
+feature.rebuildAllocationVmView();
+const initial = feature.allocationVmRows.map((row) => row.name);
+const deploymentFilter = feature.allocationVmFilters.find((item) => item.key === "deploymentType");
+const logicalOptionLabels = deploymentFilter.options.map((option) => option.label);
+deploymentFilter.selected = ["Zone 1"];
+feature.zoneDisplayMode = "physical";
+feature.seedAllocationVmDeploymentFilterOptions();
+feature.rebuildAllocationVmView();
+const physicalOptionLabels = deploymentFilter.options.map((option) => option.label);
+const physicalSelectionReset = [...deploymentFilter.selected];
+const physicalDeployments = feature.allocationVmRows.map((row) => feature.allocationVmDeploymentDisplay(row));
+feature.zoneDisplayMode = "logical";
+feature.seedAllocationVmDeploymentFilterOptions();
+feature.rebuildAllocationVmView();
+feature.allocationVmSearch = "payments";
+feature.rebuildAllocationVmView();
+const searched = feature.allocationVmRows.map((row) => row.name);
+feature.allocationVmSearch = "";
+const power = feature.allocationVmFilters.find((item) => item.key === "powerState");
+power.selected = ["VM running"];
+feature.rebuildAllocationVmView();
+const filtered = feature.allocationVmRows.map((row) => row.name);
+feature.allocationVmPageSize = 1;
+feature.rebuildAllocationVmView();
+feature.setAllocationVmPage(2);
+console.log(JSON.stringify({
+  initial,
+  logicalOptionLabels,
+  physicalOptionLabels,
+  physicalSelectionReset,
+  physicalDeployments,
+  searched,
+  filtered,
+  pageCount: feature.allocationVmPageCount,
+  secondPage: feature.paginatedAllocationVms.map((row) => row.name),
+}));
+""", scripts=[
+            "js/shared/http.js",
+            "js/shared/tables.js",
+            "js/shared/resources.js",
+            "js/shared/business-context.js",
+            "js/features/allocation-events.js",
+        ])
+
+        self.assertEqual(["vm-a", "vm-b", "vm-c"], result["initial"])
+        self.assertEqual(["Regional", "Log Zone 1", "Log Zone 2"], result["logicalOptionLabels"])
+        self.assertEqual(["Regional", "Phy Zone 1", "Phy Zone 3"], result["physicalOptionLabels"])
+        self.assertEqual(
+            ["Regional", "Zone 1", "Zone 3"],
+            result["physicalSelectionReset"],
+        )
+        self.assertEqual(["Regional", "Phy Zone 1", "Phy Zone 3"], result["physicalDeployments"])
+        self.assertEqual(["vm-b", "vm-c"], result["searched"])
+        self.assertEqual(["vm-a", "vm-b"], result["filtered"])
+        self.assertEqual(2, result["pageCount"])
+        self.assertEqual(["vm-b"], result["secondPage"])
+
+    def test_allocation_events_metrics_follow_period_and_failure_scope(self):
+        result = self.run_model_scenario("""
+const feature = createAllocationEventsFeature();
+feature.relativeTimeText = () => "2 hours ago";
+feature.formatDateTimeWithTimeZone = (value) => `LOCAL(${new Date(value).toISOString()}) (Europe/Paris)`;
+feature.allocationVmMetadata = {
+  activityLog: {
+    coverageEnd: "2026-09-23T14:40:00Z",
+  },
+};
+feature.allocationVms = [
+  {
+    id: "a", name: "vm-a",
+    allocation: {
+      periods: {
+        "7d": { succeeded: 3, failed: 1, confirmedAllocationFailures: 1, complete: true },
+        "30d": {
+          succeeded: 39, failed: 3, confirmedAllocationFailures: 1, complete: true,
+          start: "2026-08-24T14:40:00Z", end: "2026-09-23T14:40:00Z",
+        },
+      },
+      lastAllocation: { timestamp: "2026-09-23T12:40:00Z", outcome: "succeeded", action: "restart" },
+      lastFailure: {
+        timestamp: "2026-09-20T12:40:00Z", action: "start",
+        errorCode: "ZonalAllocationFailed", errorMessage: "No zonal capacity.",
+      },
+    },
+  },
+  {
+    id: "b", name: "vm-b",
+    allocation: {
+      periods: {
+        "7d": { succeeded: 1, failed: 0, confirmedAllocationFailures: 0, complete: true },
+        "30d": { succeeded: 1, failed: 0, confirmedAllocationFailures: 0, complete: true },
+      },
+      lastAllocation: null, lastFailure: null,
+    },
+  },
+  {
+    id: "c", name: "vm-c",
+    allocation: {
+      periods: {
+        "7d": { succeeded: 0, failed: 0, confirmedAllocationFailures: 0, complete: false },
+        "30d": { succeeded: 0, failed: 0, confirmedAllocationFailures: 0, complete: false },
+      },
+    },
+  },
+  {
+    id: "d", name: "vm-d",
+    allocation: {
+      periods: {
+        "7d": { succeeded: 0, failed: 2, confirmedAllocationFailures: 0, complete: true },
+        "30d": { succeeded: 0, failed: 2, confirmedAllocationFailures: 0, complete: true },
+      },
+    },
+  },
+];
+const confirmed = {
+  counts: feature.allocationVmSuccessCounts(feature.allocationVms[0]),
+  rate: feature.allocationVmSuccessRate(feature.allocationVms[0]),
+  excludedState: feature.allocationVmSuccessEmptyText(feature.allocationVms[3]),
+};
+feature.toggleAllocationVmConfirmedFailuresOnly();
+const allFailures = {
+  counts: feature.allocationVmSuccessCounts(feature.allocationVms[0]),
+  rate: feature.allocationVmSuccessRate(feature.allocationVms[0]),
+  failedOnlyRate: feature.allocationVmSuccessRate(feature.allocationVms[3]),
+};
+feature.setAllocationVmPeriod("7d");
+const sevenDays = {
+  counts: feature.allocationVmSuccessCounts(feature.allocationVms[0]),
+  rate: feature.allocationVmSuccessRate(feature.allocationVms[0]),
+};
+feature.allocationVmPeriod = "30d";
+feature.allocationVmSort = { key: "allocationSuccess", direction: "desc" };
+const sorted = feature.sortAllocationVmsBySuccess([...feature.allocationVms]).map((row) => row.name);
+feature.allocationVmSort = { key: "name", direction: "asc" };
+feature.toggleAllocationVmFailuresOnly();
+const allFailureVmNames = feature.allocationVmRows.map((row) => row.name);
+feature.toggleAllocationVmConfirmedFailuresOnly();
+const confirmedFailureVmNames = feature.allocationVmRows.map((row) => row.name);
+console.log(JSON.stringify({
+  confirmed,
+  allFailures,
+  sevenDays,
+  sorted,
+  allFailureVmNames,
+  confirmedFailureVmNames,
+  periodTooltip: feature.allocationVmPeriodTooltip(),
+  successTooltip: feature.allocationVmSuccessTooltip(feature.allocationVms[0]),
+  lastAllocation: feature.allocationVmLastAllocationText(feature.allocationVms[0]),
+  lastAllocationTitle: feature.allocationVmLastAllocationTitle(feature.allocationVms[0]),
+  lastFailure: feature.allocationVmLastFailureText(feature.allocationVms[0]),
+}));
+""", scripts=[
+            "js/shared/http.js",
+            "js/shared/tables.js",
+            "js/shared/resources.js",
+            "js/shared/business-context.js",
+            "js/features/allocation-events.js",
+        ])
+
+        self.assertTrue(result["confirmed"]["counts"].startswith("39 ok"))
+        self.assertIn("1 failed", result["confirmed"]["counts"])
+        self.assertEqual("97.5%", result["confirmed"]["rate"])
+        self.assertEqual("No matching events", result["confirmed"]["excludedState"])
+        self.assertTrue(result["allFailures"]["counts"].startswith("39 ok"))
+        self.assertIn("3 failed", result["allFailures"]["counts"])
+        self.assertEqual("92.9%", result["allFailures"]["rate"])
+        self.assertEqual("0%", result["allFailures"]["failedOnlyRate"])
+        self.assertTrue(result["sevenDays"]["counts"].startswith("3 ok"))
+        self.assertIn("1 failed", result["sevenDays"]["counts"])
+        self.assertEqual("75%", result["sevenDays"]["rate"])
+        self.assertEqual(["vm-b", "vm-a", "vm-d", "vm-c"], result["sorted"])
+        self.assertEqual(["vm-a", "vm-d"], result["allFailureVmNames"])
+        self.assertEqual(["vm-a"], result["confirmedFailureVmNames"])
+        self.assertIn("LOCAL(2026-08-24T14:40:00.000Z) (Europe/Paris)", result["periodTooltip"])
+        self.assertIn("LOCAL(2026-09-23T14:40:00.000Z) (Europe/Paris)", result["periodTooltip"])
+        self.assertIn("latest complete UTC day", result["periodTooltip"])
+        self.assertIn("VM create operations", result["periodTooltip"])
+        self.assertIn("Only AllocationFailed and ZonalAllocationFailed", result["successTooltip"])
+        self.assertIn("LOCAL(2026-08-24T14:40:00.000Z) (Europe/Paris)", result["successTooltip"])
+        self.assertTrue(result["lastAllocation"].startswith("Succeeded"))
+        self.assertTrue(result["lastAllocation"].endswith("2 hours ago"))
+        self.assertIn("LOCAL(2026-09-23T12:40:00.000Z) (Europe/Paris)", result["lastAllocationTitle"])
+        self.assertTrue(result["lastFailure"].startswith("ZonalAllocationFailed"))
+        self.assertTrue(result["lastFailure"].endswith("2 hours ago"))
+
+    def test_allocation_csv_leaves_incomplete_period_counts_blank(self):
+        result = self.run_model_scenario("""
+const feature = createAllocationEventsFeature();
+const incomplete = {
+  allocation: {
+    periods: {
+      "30d": {
+        complete: false,
+        succeeded: 4,
+        failed: 2,
+        confirmedAllocationFailures: 1,
+      },
+    },
+  },
+};
+const complete = {
+  allocation: {
+    periods: {
+      "30d": {
+        complete: true,
+        succeeded: 4,
+        failed: 2,
+        confirmedAllocationFailures: 1,
+      },
+    },
+  },
+};
+console.log(JSON.stringify({
+  incompleteSuccess: feature.allocationVmCsvMetricValue(incomplete, "succeeded"),
+  incompleteFailure: feature.allocationVmCsvPeriodValue(incomplete, "failed"),
+  completeSuccess: feature.allocationVmCsvMetricValue(complete, "succeeded"),
+  completeFailure: feature.allocationVmCsvPeriodValue(complete, "failed"),
+}));
+""", scripts=[
+            "js/shared/http.js",
+            "js/shared/tables.js",
+            "js/shared/resources.js",
+            "js/shared/business-context.js",
+            "js/features/allocation-events.js",
+        ])
+
+        self.assertEqual("", result["incompleteSuccess"])
+        self.assertEqual("", result["incompleteFailure"])
+        self.assertEqual(4, result["completeSuccess"])
+        self.assertEqual(2, result["completeFailure"])
+
+    def test_allocation_refresh_failure_does_not_present_empty_success_state(self):
+        result = self.run_model_scenario("""
+requestJson = async () => { throw new Error("graph unavailable"); };
+(async () => {
+  const feature = createAllocationEventsFeature();
+  feature.allocationVmsLoaded = true;
+  feature.allocationVms = [{ id: "old" }];
+  feature.globalScopeRequest = () => ({});
+  feature.notify = (message) => { feature.notification = message; };
+  await feature.loadAllocationEventVms();
+  console.log(JSON.stringify({
+    loaded: feature.allocationVmsLoaded,
+    loading: feature.allocationVmsLoading,
+    rows: feature.allocationVms.length,
+    notification: feature.notification,
+  }));
+})();
+""", scripts=[
+            "js/shared/http.js",
+            "js/shared/tables.js",
+            "js/shared/resources.js",
+            "js/shared/business-context.js",
+            "js/features/allocation-events.js",
+        ])
+
+        self.assertFalse(result["loaded"])
+        self.assertFalse(result["loading"])
+        self.assertEqual(0, result["rows"])
+        self.assertIn("graph unavailable", result["notification"])
+
+    def test_allocation_timeline_groups_events_and_projects_details(self):
+        result = self.run_model_scenario("""
+const feature = createAllocationEventsFeature();
+feature.humanDuration = (seconds) => `${seconds}s`;
+feature.formatDateTimeWithTimeZone = (value) => `local:${value}`;
+feature.relativeTimeText = () => "relative";
+feature.allocationTimelineData = {
+  metadata: { schemaVersion: 1 },
+  coverage: {
+    start: "2026-08-24T12:00:00Z",
+    end: "2026-09-23T12:00:00Z",
+    complete: true,
+    stale: false,
+  },
+  events: [
+    {
+      id: "newest", recipe: "vm-lifecycle", type: "lifecycle", action: "Start",
+      timestamp: "2026-09-23T12:00:00Z", outcome: "failed",
+      details: {},
+      error: {
+        code: "ResourceOperationFailure",
+        message: "The operation failed.",
+        detailCount: 2,
+        details: [
+          { code: "OtherFailure", message: "Other detail." },
+          { code: "AllocationFailed", message: "No capacity." },
+        ],
+        codes: ["ResourceOperationFailure", "OtherFailure", "AllocationFailed"],
+        hasAllocationFailure: true,
+      },
+    },
+    {
+      id: "config", recipe: "vm-configuration", type: "configuration", action: "Write",
+      timestamp: "2026-09-23T10:30:00Z", outcome: "succeeded",
+      details: {
+        vmSize: "Standard_D4s_v5", zones: ["1"], physicalZones: ["2"],
+        location: "eastus", locationDisplayName: "East US",
+        provisioningState: "Updating", errorCode: null,
+      },
+    },
+    {
+      id: "oldest", recipe: "vm-lifecycle", type: "lifecycle", action: "Deallocate",
+      timestamp: "2026-09-21T10:30:00Z", outcome: "succeeded", details: {},
+    },
+  ],
+};
+const groups = feature.allocationTimelineGroups;
+console.log(JSON.stringify({
+  coverage: feature.allocationTimelineCoverageText(),
+  coverageState: feature.allocationTimelineCoverageState(),
+  groupKeys: groups.map((group) => group.key),
+  eventIds: groups.flatMap((group) => group.events.map((event) => event.id)),
+  gaps: groups.flatMap((group) => group.events.map((event) => event.gapText)),
+  lastFlags: groups.flatMap((group) => group.events.map((event) => event.isLast)),
+  lifecycleTitle: feature.allocationTimelineEventTitle(groups[0].events[0]),
+  configTitle: feature.allocationTimelineEventTitle(groups[0].events[1]),
+  createTitle: feature.allocationTimelineEventTitle({
+    recipe: "vm-configuration", action: "Write", details: { provisioningState: "Creating" },
+  }),
+  currentTitle: feature.allocationTimelineEventTitle({ recipe: "current-state" }),
+  outcomeClass: feature.allocationTimelineOutcomeClass("failed"),
+  details: feature.allocationTimelineDetailEntries(groups[0].events[1]),
+  createDetails: feature.allocationTimelineDetailEntries({
+    recipe: "vm-configuration",
+    details: {
+      location: "eastus", locationDisplayName: "East US", provisioningState: "Creating",
+    },
+  }),
+  logicalZone: feature.allocationTimelineZoneDisplay(groups[0].events[1]),
+  physicalZone: (() => {
+    feature.zoneDisplayMode = "physical";
+    return feature.allocationTimelineZoneDisplay(groups[0].events[1]);
+  })(),
+  missingZone: feature.allocationTimelineZoneDisplay({ details: {} }),
+  regionalCreate: feature.allocationTimelineZoneDisplay({
+    recipe: "vm-configuration", details: { provisioningState: "Creating" },
+  }),
+  regionalZone: feature.allocationTimelineZoneDisplay({ details: { zones: [] } }),
+  errorTitle: feature.allocationTimelineErrorDetailTitle(groups[0].events[0].error.details[1], 1),
+  errorJson: feature.allocationTimelineErrorJson(groups[0].events[0]),
+}));
+""", scripts=[
+            "js/shared/http.js",
+            "js/shared/tables.js",
+            "js/shared/resources.js",
+            "js/shared/business-context.js",
+            "js/features/allocation-events.js",
+        ])
+
+        self.assertIn("local:2026-08-24T12:00:00Z", result["coverage"])
+        self.assertEqual("complete", result["coverageState"])
+        self.assertEqual(["2026-09-23", "2026-09-21"], result["groupKeys"])
+        self.assertEqual(["newest", "config", "oldest"], result["eventIds"])
+        self.assertEqual(["5400s between events", "172800s between events", ""], result["gaps"])
+        self.assertEqual([False, False, True], result["lastFlags"])
+        self.assertEqual("Start", result["lifecycleTitle"])
+        self.assertEqual("VM configuration updated", result["configTitle"])
+        self.assertEqual("VM created", result["createTitle"])
+        self.assertEqual("Current configuration", result["currentTitle"])
+        self.assertEqual("err", result["outcomeClass"])
+        self.assertEqual("Log Zone 1", result["logicalZone"])
+        self.assertEqual("Phy Zone 2", result["physicalZone"])
+        self.assertEqual("Not provided", result["missingZone"])
+        self.assertEqual("Regional", result["regionalCreate"])
+        self.assertEqual("Regional", result["regionalZone"])
+        self.assertEqual("AllocationFailed", result["errorTitle"])
+        self.assertIn('"OtherFailure"', result["errorJson"])
+        self.assertIn('"AllocationFailed"', result["errorJson"])
+        self.assertEqual(
+            [
+                {"key": "vmSize", "label": "VM size", "value": "Standard_D4s_v5"},
+                {"key": "provisioningState", "label": "Provisioning state", "value": "Updating"},
+            ],
+            result["details"],
+        )
+        self.assertEqual(
+            [
+                {"key": "location", "label": "Location", "value": "East US"},
+                {"key": "provisioningState", "label": "Provisioning state", "value": "Creating"},
+            ],
+            result["createDetails"],
+        )
+
     def test_location_report_groups_display_reference_name_with_canonical_key(self):
         result = self.run_model_scenario("""
 const row = { location: "northeurope", locationDisplayName: "North Europe" };
@@ -505,6 +910,10 @@ global.createDataCollectionFeature = () => ({
   statuses: {},
   loadPipelines() {},
 });
+global.createAllocationEventsFeature = () => ({
+  allocationVmsLoaded: false,
+  loadAllocationEventVms() {},
+});
 global.createVmCoverageFeature = () => ({
   vmsLoaded: false,
   coverageUnmarkedOwner: "required",
@@ -589,6 +998,9 @@ global.createAdministrationFeature = () => ({
   loadSettings() {}, loadBusinessContextFields() {},
 });
 global.createDataCollectionFeature = () => ({ statuses: {}, loadPipelines() {} });
+global.createAllocationEventsFeature = () => ({
+  allocationVmsLoaded: false, loadAllocationEventVms() {},
+});
 global.createVmCoverageFeature = () => ({
   vmsLoaded: false,
   coverageUnmarkedOwner: "required",
@@ -666,6 +1078,9 @@ global.createAdministrationFeature = () => ({
   loadSettings() {}, loadBusinessContextFields() {},
 });
 global.createDataCollectionFeature = () => ({ statuses: {}, loadPipelines() {} });
+global.createAllocationEventsFeature = () => ({
+  allocationVmsLoaded: false, loadAllocationEventVms() {},
+});
 global.createVmCoverageFeature = () => ({
   vmsLoaded: false,
   coverageUnmarkedOwner: "required",

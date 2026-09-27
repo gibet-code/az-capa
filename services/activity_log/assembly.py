@@ -45,6 +45,7 @@ class PreparedEvent:
     operation_id: str | None = None
     correlation_id: str | None = None
     columns: dict[str, object] = field(default_factory=dict)
+    error_details_gz: bytes | None = None
     payload_gz: bytes | None = None
     payload_encoding: str | None = None
     reprojection_pending: bool = False
@@ -99,6 +100,14 @@ def _select_applied(events: list[PreparedEvent]) -> PreparedEvent | None:
     return max(candidates, key=lambda event: _parse_timestamp(event.event_timestamp), default=None)
 
 
+def _select_failed_error(events: list[PreparedEvent]) -> PreparedEvent | None:
+    failed = [
+        event for event in events
+        if (event.status or "").lower() == "failed" and event.error_details_gz is not None
+    ]
+    return max(failed, key=lambda event: _parse_timestamp(event.event_timestamp), default=None)
+
+
 def _merge_columns(events: list[PreparedEvent]) -> dict[str, object]:
     """Merge projected columns; the Accepted stage (applied config) wins."""
     ordered = sorted(events, key=lambda event: (event.status or "").lower() == _ACCEPTED)
@@ -131,6 +140,7 @@ def assemble_operation(events: list[PreparedEvent]) -> dict:
     identity = identity_string(representative)
     identity_digest = identity_hash(identity)
     applied = _select_applied(ordered)
+    failed_error = _select_failed_error(ordered)
     all_ids = sorted({event.event_data_id for event in ordered if event.event_data_id})
     return {
         "OperationIdentity": identity,
@@ -152,6 +162,7 @@ def assemble_operation(events: list[PreparedEvent]) -> dict:
         "AppliedEventId": applied.event_data_id if applied else None,
         "AppliedPayloadGz": applied.payload_gz if applied else None,
         "PayloadEncoding": applied.payload_encoding if applied else None,
+        "ErrorDetailsGz": failed_error.error_details_gz if failed_error else None,
         "Outcome": _outcome(ordered),
         "PairingStatus": PAIRING_PAIRED if representative.correlation_id else PAIRING_UNPAIRED,
         "ReprojectionPending": any(event.reprojection_pending for event in ordered),

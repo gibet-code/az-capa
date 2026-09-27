@@ -73,14 +73,14 @@ param privateDnsManagement = 'Deploy'
 | `CR_USAGE_CHECKPOINT_TABLE_NAME` | `CrUsageCheckpoints` | Not shipped | Code default |
 | `CR_USAGE_SUMMARY_TABLE_NAME` | `CrUsageSummaries` | Not shipped | Code default |
 | `ACTIVITY_LOG_HISTORICAL_DAYS` | `30`, clamped to 1-89 | Not shipped | Code default |
+| `ACTIVITY_LOG_INLINE_PAYLOAD_MAX_BYTES` | `60000`, minimum 0; `0` spills every retained payload and error detail to Blob | Not shipped | Set to `0` for local Azurite |
 | `ACTIVITY_LOG_REFRESH_OVERLAP_HOURS` | `24`, minimum 0 | Not shipped | Code default |
-| `ACTIVITY_LOG_INGESTION_LAG_MINUTES` | `20`, minimum 0 | Not shipped | Code default |
-| `ACTIVITY_LOG_MAX_CONCURRENCY` | `10`, minimum 1 | Not shipped | Code default |
+| `ACTIVITY_LOG_MAX_CONCURRENCY` | `20`, minimum 1 | Not shipped | Code default |
 | `ACTIVITY_LOG_REPLAY_MAX_UNITS_PER_RUN` | `200`, minimum 0 | Not shipped | Code default |
 | `ACTIVITY_LOG_PENDING_UNKNOWN_HOURS` | `48`, minimum 0 | Not shipped | Code default |
 | `ACTIVITY_LOG_OPERATIONS_TABLE_NAME` | `ActivityLogOperations` | Not shipped | Code default |
 | `ACTIVITY_LOG_COLLECTION_STATE_TABLE_NAME` | `ActivityLogCollectionState` | Not shipped | Code default |
-| `ACTIVITY_LOG_SPILL_CONTAINER_NAME` | `activity-log-spill` | Not shipped | Code default |
+| `ACTIVITY_LOG_SPILL_BLOB_CONTAINER` | `activity-log-spill` | Not shipped | Code default |
 | `ZONE_MAPPING_MAX_CONCURRENCY` | `15`, minimum 1 | Not shipped | Code default |
 | `ZONE_MAPPING_BLOB_CONTAINER` | `zone-mappings` | Removed; Bicep provisions `zone-mappings` | Redundant default |
 | `COMPUTE_SKU_BLOB_CONTAINER` | `compute-skus` | Removed; Bicep provisions `compute-skus` | Redundant default |
@@ -109,7 +109,9 @@ param privateDnsManagement = 'Deploy'
 
 | Environment variable | Default or fallback in code | Bicep value after audit | Status |
 |---|---|---|---|
-| `AzureWebJobsStorage` | No production default; `UseDevelopmentStorage=true` selects local mode | Not shipped as a connection string; production uses the identity-based `AzureWebJobsStorage__*` settings below | Required locally; host-required connection name |
+| `AzureWebJobsStorage` | No production default; `UseDevelopmentStorage=true` selects local mode unless explicitly overridden | Not shipped as a connection string; production uses the identity-based `AzureWebJobsStorage__*` settings below | Required locally; host-required connection name |
+| `AZ_CAPACITY_LOCAL_DEVELOPMENT` | Absent; `true` selects local credentials independently of the storage connection-string form | Not shipped | Local development only |
+| `AZ_CAPACITY_START_STANDALONE_AZURITE` | Absent; `true` makes `start-local.ps1` ensure split app and Durable Azurite instances are ready | Not shipped | Local launcher only |
 | `AZURE_CLIENT_ID` | `None` | `managedIdentity.properties.clientId` | Required to select the user-assigned identity |
 | `LOCAL_AUTH_TYPE` | `AzureCliCredential` | Not shipped | Local development only |
 | `LOCAL_TENANT_ID` | `None` | Not shipped | Local client-secret authentication only |
@@ -153,10 +155,9 @@ host settings. Flex Consumption receives its Python runtime from
 No Bicep app setting is orphaned after this audit. Every retained setting is consumed
 by first-party code, an Azure Functions binding, or an Azure platform feature.
 
-The `data_collection_dispatch_schedule()` Python accessor currently has no
-production caller. The environment variable itself is not orphaned: the timer
-binding consumes it as `%DATA_COLLECTION_DISPATCH_SCHEDULE%`. The accessor is left
-in place because removing code APIs was outside this deployment-setting cleanup.
+`DATA_COLLECTION_DISPATCH_SCHEDULE` is not orphaned: the timer binding consumes
+it directly as `%DATA_COLLECTION_DISPATCH_SCHEDULE%`. There is intentionally no
+Python settings accessor for a value resolved by the Functions host.
 
 Local settings may contain profile-specific or legacy keys that are outside the
 Bicep deployment. They should be audited separately without publishing their values,

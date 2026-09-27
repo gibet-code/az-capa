@@ -72,6 +72,7 @@ _ASSETS = {
     "styles/drawers.css",
     "styles/responsive.css",
     "js/features/administration.js",
+    "js/features/allocation-events.js",
     "js/features/data-collection.js",
     "js/features/coverage-editor.js",
     "js/features/coverage-report-model.js",
@@ -150,7 +151,6 @@ def api_settings(req: func.HttpRequest) -> func.HttpResponse:
         "activityLog": {
             "historicalDays": settings.activity_log_historical_days(),
             "refreshOverlapHours": settings.activity_log_refresh_overlap_hours(),
-            "ingestionLagMinutes": settings.activity_log_ingestion_lag_minutes(),
             "maxConcurrency": settings.activity_log_max_concurrency(),
             "replayMaxUnitsPerRun": settings.activity_log_replay_max_units_per_run(),
             "pendingUnknownHours": settings.activity_log_pending_unknown_hours(),

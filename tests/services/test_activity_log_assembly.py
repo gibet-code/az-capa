@@ -103,6 +103,30 @@ class AssembleTests(unittest.TestCase):
         events = [_event(event_data_id="p", correlation_id="corr", reprojection_pending=True)]
         self.assertTrue(assembly.assemble(events)[0]["ReprojectionPending"])
 
+    def test_accepted_configuration_and_failed_error_details_merge(self):
+        events = [
+            _event(
+                event_data_id="accepted",
+                correlation_id="corr",
+                columns={"VmSize": "Standard_D4s_v5"},
+            ),
+            _event(
+                event_data_id="failed",
+                status="Failed",
+                correlation_id="corr",
+                event_timestamp="2026-06-30T17:44:00Z",
+                columns={"ErrorCode": "Parent", "ErrorDetailCode": "AllocationFailed"},
+                error_details_gz=b"error-details",
+            ),
+        ]
+
+        operation = assembly.assemble(events)[0]
+
+        self.assertEqual("Standard_D4s_v5", operation["Columns"]["VmSize"])
+        self.assertEqual("Parent", operation["Columns"]["ErrorCode"])
+        self.assertEqual("AllocationFailed", operation["Columns"]["ErrorDetailCode"])
+        self.assertEqual(b"error-details", operation["ErrorDetailsGz"])
+
 
 class ParseTimestampTests(unittest.TestCase):
     def test_missing_timestamp_is_treated_as_far_future(self):

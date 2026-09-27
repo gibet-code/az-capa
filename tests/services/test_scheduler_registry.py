@@ -45,6 +45,11 @@ class RegistryTests(unittest.TestCase):
         descriptor = registry.get("zone_mapping")
         self.assertEqual(86400, descriptor.default_frequency_seconds)
 
+    def test_activity_log_defaults_to_hourly(self):
+        descriptor = registry.get("activity_log")
+        self.assertEqual(3600, descriptor.default_frequency_seconds)
+        self.assertEqual(0, descriptor.default_anchor_seconds)
+
     def test_get_unknown_raises_keyerror(self):
         with self.assertRaises(KeyError):
             registry.get("does_not_exist")

@@ -2,18 +2,20 @@
 
 This is the retained-source assembly store (spec Sections 4, 6, 8). It persists
 one row per operation identity in ``ActivityLogOperations`` with the recipe's
-projected fields promoted to typed columns and the full applied event retained
-inline as gzip; a rare oversize payload spills to a private Blob and the row
-keeps a pointer plus a truncation flag. Per-subscription collection coverage
-lives in ``ActivityLogCollectionState``.
+projected fields promoted to typed columns. Applied events and sanitized error
+details are retained independently as gzip; rare oversize payloads spill to a
+private Blob. Per-subscription collection coverage lives in
+``ActivityLogCollectionState``.
 
 Storage owns persistence only: it never imports services and encodes no VM,
 VMSS, CR, or subscription business rules. Assembly hands it operation dicts.
 """
 from __future__ import annotations
 
+import gzip
 import json
 import logging
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 
 from azure.core.exceptions import (
@@ -30,13 +32,11 @@ from .table import (
     MAX_TRANSACTION_OPERATIONS as _MAX_BATCH,
     decode_json_array_properties,
     encode_json_array_properties,
+    submit_table_transaction,
     table_service_client,
 )
 
 _COVERAGE_RK = "coverage"
-
-# Table caps a property at 64 KB; keep headroom for the rest of the entity.
-_MAX_INLINE_PAYLOAD_BYTES = 60_000
 
 _ALL_EVENT_IDS = dict(
     legacy_property="AllEventIds",
@@ -53,13 +53,14 @@ _RESERVED_COLUMNS = frozenset({
     "AllEventIds", "AllEventIdsChunkCount",
     "AppliedEventId", "AppliedPayloadGz", "PayloadEncoding",
     "AppliedPayloadSpillBlob", "PayloadTruncated",
+    "ErrorDetailsGz", "ErrorDetailsSpillBlob",
     "Outcome", "PairingStatus", "ReprojectionPending",
     "AssemblerVersion", "RecipeVersion", "PublishedVersion",
     "FirstSeenAt", "LastSeenAt", "FinalizedAt",
 })
 
 _TERMINAL_OUTCOMES = frozenset({"succeeded", "failed", "cancelled"})
-_CONTENT_SETTINGS = ContentSettings(content_type="application/json", content_encoding="gzip")
+_CONTENT_SETTINGS = ContentSettings(content_type="application/gzip")
 
 
 def _coerce_property(value):
@@ -73,6 +74,26 @@ def _spill_blob_name(subscription_id: str, applied_event_id: str) -> str:
     return f"{(subscription_id or 'unknown').lower()}/{applied_event_id}.json.gz"
 
 
+def _error_details_spill_blob_name(subscription_id: str, operation_identity_hash: str) -> str:
+    return (
+        f"{(subscription_id or 'unknown').lower()}/"
+        f"{operation_identity_hash}.error-details.json.gz"
+    )
+
+
+def _download_gzip_blob(blob) -> bytes:
+    downloader = blob.download_blob()
+    payload = downloader.readall()
+    if payload.startswith(b"\x1f\x8b"):
+        return payload
+
+    content_settings = getattr(downloader.properties, "content_settings", None)
+    content_encoding = getattr(content_settings, "content_encoding", None)
+    if (content_encoding or "").casefold() == "gzip":
+        return gzip.compress(payload)
+    return payload
+
+
 class ActivityLogStore:
     """Persistence for assembled operations and per-subscription coverage."""
 
@@ -81,10 +102,12 @@ class ActivityLogStore:
         operations_table_name=settings.activity_log_operations_table_name,
         collection_state_table_name=settings.activity_log_collection_state_table_name,
         spill_container_name=settings.activity_log_spill_container_name,
+        inline_payload_max_bytes: Callable[[], int] = settings.activity_log_inline_payload_max_bytes,
     ) -> None:
         self._operations_table_name = operations_table_name
         self._collection_state_table_name = collection_state_table_name
         self._spill_container_name = spill_container_name
+        self._inline_payload_max_bytes = inline_payload_max_bytes
         self._table_cache: dict[str, TableClient] = {}
         self._container_cache = None
 
@@ -148,8 +171,9 @@ class ActivityLogStore:
                 entities.append(entity)
             for start in range(0, len(entities), _MAX_BATCH):
                 chunk = entities[start:start + _MAX_BATCH]
-                table.submit_transaction(
-                    [("upsert", entity, {"mode": UpdateMode.REPLACE}) for entity in chunk]
+                submit_table_transaction(
+                    table,
+                    [("upsert", entity, {"mode": UpdateMode.REPLACE}) for entity in chunk],
                 )
                 written += len(chunk)
         logging.info("Upserted %d Activity Log operation(s).", written)
@@ -192,6 +216,7 @@ class ActivityLogStore:
 
         entity.update(encode_json_array_properties(operation.get("AllEventIds") or [], **_ALL_EVENT_IDS))
         self._attach_payload(entity, operation)
+        self._attach_error_details(entity, operation)
 
         entity = {key: value for key, value in entity.items() if value is not None}
         if outcome in _TERMINAL_OUTCOMES:
@@ -202,7 +227,8 @@ class ActivityLogStore:
         payload = operation.get("AppliedPayloadGz")
         if not payload:
             return
-        if len(payload) <= _MAX_INLINE_PAYLOAD_BYTES:
+        inline_limit = self._inline_payload_max_bytes()
+        if inline_limit > 0 and len(payload) <= inline_limit:
             entity["AppliedPayloadGz"] = payload
             entity["PayloadTruncated"] = False
             return
@@ -215,6 +241,23 @@ class ActivityLogStore:
         )
         entity["AppliedPayloadSpillBlob"] = blob_name
         entity["PayloadTruncated"] = True
+
+    def _attach_error_details(self, entity: dict, operation: dict) -> None:
+        payload = operation.get("ErrorDetailsGz")
+        if not payload:
+            return
+        inline_limit = self._inline_payload_max_bytes()
+        if inline_limit > 0 and len(payload) <= inline_limit:
+            entity["ErrorDetailsGz"] = payload
+            return
+        blob_name = _error_details_spill_blob_name(
+            operation.get("SubscriptionId") or "",
+            operation.get("OperationIdentityHash") or operation.get("RowKey"),
+        )
+        self._container().upload_blob(
+            blob_name, payload, overwrite=True, content_settings=_CONTENT_SETTINGS
+        )
+        entity["ErrorDetailsSpillBlob"] = blob_name
 
     @staticmethod
     def _existing_meta(table: TableClient, partition_key: str) -> dict[str, dict]:
@@ -245,8 +288,15 @@ class ActivityLogStore:
         """Return the gzip payload for an operation row, rehydrating from spill."""
         if entity.get("PayloadTruncated") and entity.get("AppliedPayloadSpillBlob"):
             blob = self._container().get_blob_client(entity["AppliedPayloadSpillBlob"])
-            return blob.download_blob().readall()
+            return _download_gzip_blob(blob)
         return entity.get("AppliedPayloadGz")
+
+    def load_error_details(self, entity: dict) -> bytes | None:
+        """Return compressed error details, rehydrating a spilled value."""
+        if entity.get("ErrorDetailsSpillBlob"):
+            blob = self._container().get_blob_client(entity["ErrorDetailsSpillBlob"])
+            return _download_gzip_blob(blob)
+        return entity.get("ErrorDetailsGz")
 
     def query_operations(self, subscription_id: str, extra_filter: str | None = None) -> list[dict]:
         """Return operation rows for a subscription (for reconcile/replay)."""
@@ -261,6 +311,45 @@ class ActivityLogStore:
             record["AllEventIds"] = decode_json_array_properties(row, **_ALL_EVENT_IDS)
             results.append(record)
         return results
+
+    def query_operations_window(
+        self,
+        subscription_id: str,
+        start_time: str,
+        end_time: str,
+        operation_names: Iterable[str] | None,
+        *,
+        select: Iterable[str],
+    ) -> list[dict]:
+        """Query projected operation columns in an inclusive event-time window."""
+        def literal(value: object) -> str:
+            return str(value).replace("'", "''")
+
+        if operation_names is not None:
+            names = tuple(dict.fromkeys(
+                str(value) for value in operation_names if value
+            ))
+        else:
+            names = ()
+        if operation_names is not None and not names:
+            return []
+
+        query = (
+            f"SubscriptionId eq '{literal((subscription_id or '').lower())}'"
+            f" and LastEventTime ge '{literal(start_time)}'"
+            f" and LastEventTime le '{literal(end_time)}'"
+        )
+        if names:
+            operation_filter = " or ".join(
+                f"OperationName eq '{literal(name)}'" for name in names
+            )
+            query = f"{query} and ({operation_filter})"
+        columns = list(dict.fromkeys(select))
+        rows = self._operations_table().query_entities(query, select=columns)
+        return [
+            {column: row[column] for column in columns if column in row}
+            for row in rows
+        ]
 
     def hydrate_operation(self, row: dict) -> dict:
         """Rebuild an assemble-shaped operation dict from a stored row.
@@ -296,6 +385,7 @@ class ActivityLogStore:
             "AppliedEventId": row.get("AppliedEventId"),
             "AppliedPayloadGz": self.load_applied_payload(row),
             "PayloadEncoding": row.get("PayloadEncoding"),
+            "ErrorDetailsGz": self.load_error_details(row),
             "Outcome": row.get("Outcome"),
             "PairingStatus": row.get("PairingStatus"),
             "ReprojectionPending": bool(row.get("ReprojectionPending")),
@@ -310,7 +400,10 @@ class ActivityLogStore:
         for subscription_id in sorted({str(value).lower() for value in subscription_ids if value}):
             rows = list(table.query_entities(
                 f"SubscriptionId eq '{subscription_id}'",
-                select=["PartitionKey", "RowKey", "AppliedPayloadSpillBlob"],
+                select=[
+                    "PartitionKey", "RowKey",
+                    "AppliedPayloadSpillBlob", "ErrorDetailsSpillBlob",
+                ],
             ))
             self._delete_spill_blobs(rows)
             by_partition: dict[str, list[dict]] = {}
@@ -319,7 +412,7 @@ class ActivityLogStore:
             for partition_rows in by_partition.values():
                 for start in range(0, len(partition_rows), _MAX_BATCH):
                     chunk = partition_rows[start:start + _MAX_BATCH]
-                    table.submit_transaction([
+                    submit_table_transaction(table, [
                         ("delete", {"PartitionKey": row["PartitionKey"], "RowKey": row["RowKey"]})
                         for row in chunk
                     ])
@@ -330,14 +423,15 @@ class ActivityLogStore:
     def _delete_spill_blobs(self, rows) -> None:
         container = None
         for row in rows:
-            blob_name = row.get("AppliedPayloadSpillBlob")
-            if not blob_name:
-                continue
-            container = container or self._container()
-            try:
-                container.delete_blob(blob_name)
-            except ResourceNotFoundError:
-                pass
+            for property_name in ("AppliedPayloadSpillBlob", "ErrorDetailsSpillBlob"):
+                blob_name = row.get(property_name)
+                if not blob_name:
+                    continue
+                container = container or self._container()
+                try:
+                    container.delete_blob(blob_name)
+                except ResourceNotFoundError:
+                    pass
 
     # ── collection state ──────────────────────────────────────────────────
     def get_coverage(self, subscription_id: str) -> dict | None:

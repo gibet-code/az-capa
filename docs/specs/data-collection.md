@@ -162,7 +162,8 @@ reads that make the detailed status heavy.
 }
 ```
 
-- `nextDueAt = lastDispatchedAt + frequency` when `enabled`; `null` when disabled.
+- `nextDueAt` is the first fixed-grid cadence slot after `lastDispatchedAt`
+  when enabled; it is `null` when disabled.
 - `progress` is the common progress object (§2.4) for running pipelines, else
   `null`.
 
@@ -176,7 +177,7 @@ normalized progress. Used for a per-pipeline detail/drawer view, not the table.
   "id": "activity_log",
   "name": "Activity Log",
   "enabled": true,
-  "frequencySeconds": 86400,
+  "frequencySeconds": 3600,
   "lastDispatchedAt": "...", "lastTrigger": "scheduled",
   "lastOutcome": "completed", "lastCompletedAt": "...",
   "running": true,
@@ -203,7 +204,7 @@ custom status.
   "pipeline": "activity_log",
   "runs": [
     {
-      "startedAt": "2026-09-02T07:00:00Z",
+      "startedAt": "2026-09-02T14:00:00Z",
       "action": "refresh",
       "trigger": "scheduled",
       "status": "running",
@@ -212,7 +213,7 @@ custom status.
       "progress": { "complete": 0.84, "label": "8/10 subscriptions completed" }
     },
     {
-      "startedAt": "2026-09-01T07:00:00Z",
+      "startedAt": "2026-09-02T13:00:00Z",
       "action": "refresh",
       "trigger": "scheduled",
       "status": "completed",

@@ -129,10 +129,34 @@ class CachedTokenCredentialTests(unittest.TestCase):
 
 
 class CredentialSelectionTests(unittest.TestCase):
-    def test_local_detection_requires_exact_azurite_value(self):
-        with patch.dict(os.environ, {"AzureWebJobsStorage": "UseDevelopmentStorage=true"}):
+    def test_local_detection_supports_default_azurite_value(self):
+        with patch.dict(
+            os.environ,
+            {"AzureWebJobsStorage": "UseDevelopmentStorage=true"},
+            clear=True,
+        ):
             self.assertTrue(credentials.is_running_locally())
-        with patch.dict(os.environ, {"AzureWebJobsStorage": "https://storage"}):
+        with patch.dict(os.environ, {"AzureWebJobsStorage": "https://storage"}, clear=True):
+            self.assertFalse(credentials.is_running_locally())
+
+    def test_local_detection_honors_explicit_setting(self):
+        with patch.dict(
+            os.environ,
+            {
+                "AZ_CAPACITY_LOCAL_DEVELOPMENT": "true",
+                "AzureWebJobsStorage": "https://storage",
+            },
+            clear=True,
+        ):
+            self.assertTrue(credentials.is_running_locally())
+        with patch.dict(
+            os.environ,
+            {
+                "AZ_CAPACITY_LOCAL_DEVELOPMENT": "false",
+                "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+            },
+            clear=True,
+        ):
             self.assertFalse(credentials.is_running_locally())
 
     @patch("core.credentials.AzureCliCredential")

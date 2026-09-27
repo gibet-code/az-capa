@@ -21,6 +21,7 @@ def test_all_blueprint_families_are_discoverable():
         "data_collection_config",
         "record_run_outcome",
         "context_fields",
+        "allocation_event_vms",
         "odcr_usage_list",
         "manual_template",
         "preview_values",

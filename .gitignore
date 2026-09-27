@@ -49,6 +49,7 @@ __pycache__/
 *$py.class
 
 # Azurite artifacts
+.azurite-standalone/
 __blobstorage__
 __queuestorage__
 __tablestorage__/

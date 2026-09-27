@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from services.activity_log import projection
-from services.activity_log.projection import ProjectionResult, project
-from services.activity_log.recipes import ProjectedField, Recipe
+from services.activity_log.projection import ProjectionResult, decompress_json, project
+from services.activity_log.recipes import ErrorProjection, ProjectedField, Recipe
 
 
 def _vm_event(status="Accepted", response_body=None, status_message=None):
@@ -44,6 +44,15 @@ class ResolvePathTests(unittest.TestCase):
         value = projection.resolve_path({"responseBody": "{oops"}, "responseBody.location")
         self.assertIs(projection._MISSING, value)
 
+    def test_descends_through_list_index(self):
+        properties = {"statusMessage": json.dumps({
+            "error": {"details": [{"code": "AllocationFailed"}]}
+        })}
+
+        value = projection.resolve_path(properties, "statusMessage.error.details.0.code")
+
+        self.assertEqual("AllocationFailed", value)
+
 
 class ProjectTests(unittest.TestCase):
     def test_projects_declared_columns(self):
@@ -75,6 +84,28 @@ class ProjectTests(unittest.TestCase):
         failed = _vm_event(status="Failed", status_message={"error": {"code": "AllocationFailed"}})
         self.assertEqual({"ErrorCode": "AllocationFailed"}, project(failed, recipe).columns)
 
+    def test_project_uses_fallback_path_when_primary_is_absent(self):
+        recipe = Recipe(
+            id="p", version=1, operation_names=("a/b",),
+            projected_fields=(
+                ProjectedField(
+                    "ErrorCode",
+                    "statusMessage.error.details.0.code",
+                    on_status="Failed",
+                    fallback_paths=("statusMessage.error.code",),
+                ),
+            ),
+        )
+        failed = _vm_event(
+            status="Failed",
+            status_message={"error": {"code": "ResourceOperationFailure"}},
+        )
+
+        self.assertEqual(
+            {"ErrorCode": "ResourceOperationFailure"},
+            project(failed, recipe).columns,
+        )
+
     def test_absent_field_is_skipped_not_pending(self):
         recipe = Recipe(
             id="p", version=1, operation_names=("a/b",),
@@ -105,6 +136,103 @@ class ProjectTests(unittest.TestCase):
             result = project(event, recipe)
         self.assertTrue(result.reprojection_pending)
         self.assertEqual({}, result.columns)
+
+
+class ErrorProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.recipe = Recipe(
+            id="errors",
+            version=1,
+            operation_names=("a/b",),
+            error_projection=ErrorProjection("statusMessage.error", "Failed"),
+        )
+
+    def test_parent_and_first_detail_are_distinct_and_details_are_retained(self):
+        details = [
+            {"code": "AllocationFailed", "message": "specific", "target": "vm"},
+            {"code": "Other", "message": "second"},
+        ]
+        event = _vm_event(status="Failed", status_message={
+            "error": {
+                "code": "ResourceOperationFailure",
+                "message": "parent",
+                "details": details,
+            }
+        })
+
+        result = project(event, self.recipe)
+
+        self.assertEqual("ResourceOperationFailure", result.columns["ErrorCode"])
+        self.assertEqual("parent", result.columns["ErrorMessage"])
+        self.assertEqual("AllocationFailed", result.columns["ErrorDetailCode"])
+        self.assertEqual("specific", result.columns["ErrorDetailMessage"])
+        self.assertEqual(2, result.columns["ErrorDetailCount"])
+        self.assertEqual(details, decompress_json(result.error_details_gz))
+
+    def test_allocation_code_is_found_after_first_detail_and_recursively(self):
+        event = _vm_event(status="Failed", status_message={
+            "error": {
+                "code": "Parent",
+                "details": [
+                    {"code": "Other"},
+                    {"code": "Wrapper", "details": [
+                        {"code": "ZonalAllocationFailed"},
+                    ]},
+                ],
+            }
+        })
+
+        result = project(event, self.recipe)
+
+        self.assertEqual(
+            '["Parent","Other","Wrapper","ZonalAllocationFailed"]',
+            result.columns["ErrorCodesJson"],
+        )
+        self.assertTrue(result.columns["HasAllocationFailure"])
+
+    def test_zero_details_has_count_and_empty_retained_array(self):
+        result = project(
+            _vm_event(status="Failed", status_message={
+                "error": {"code": "Parent", "details": []},
+            }),
+            self.recipe,
+        )
+
+        self.assertEqual(0, result.columns["ErrorDetailCount"])
+        self.assertNotIn("ErrorDetailCode", result.columns)
+        self.assertEqual([], decompress_json(result.error_details_gz))
+
+    def test_codes_are_deduplicated_case_insensitively_in_encounter_order(self):
+        result = project(
+            _vm_event(status="Failed", status_message={
+                "error": {
+                    "code": "AllocationFailed",
+                    "details": [
+                        {"code": "allocationfailed"},
+                        {"code": ""},
+                        {"code": "Another"},
+                        {"code": "ANOTHER"},
+                    ],
+                },
+            }),
+            self.recipe,
+        )
+
+        self.assertEqual(
+            '["AllocationFailed","Another"]',
+            result.columns["ErrorCodesJson"],
+        )
+
+    def test_error_projection_only_runs_on_owned_stage(self):
+        result = project(
+            _vm_event(status="Accepted", status_message={
+                "error": {"code": "AllocationFailed", "details": []},
+            }),
+            self.recipe,
+        )
+
+        self.assertEqual({}, result.columns)
+        self.assertIsNone(result.error_details_gz)
 
 
 class PayloadTests(unittest.TestCase):

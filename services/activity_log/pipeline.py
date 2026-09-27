@@ -22,11 +22,17 @@ from services.app_scope import resolve_app_scope
 from storage.activity_log_store import ActivityLogStore
 
 from .assembly import PreparedEvent, assemble
-from .projection import PAYLOAD_ENCODING, compress_payload, decompress_payload, project
+from .projection import (
+    ERROR_COLUMNS,
+    PAYLOAD_ENCODING,
+    compress_payload,
+    decompress_payload,
+    project,
+)
 from .recipes import all_recipes, matching_recipes, server_operations
 
 # Bumped when assembly's folding logic changes (drives Section 10.3 replay).
-ASSEMBLER_VERSION = 1
+ASSEMBLER_VERSION = 2
 
 _RETENTION_DAYS = 89
 
@@ -39,8 +45,31 @@ def _format_timestamp(value: datetime) -> str:
     return value.replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _format_query_end(value: datetime, target_end: datetime) -> str:
+    if value == target_end:
+        value -= timedelta(milliseconds=1)
+        return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return _format_timestamp(value)
+
+
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _complete_day_end(value: datetime) -> datetime:
+    return value.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def _merge_windows(windows: list[tuple[datetime, datetime]]) -> list[tuple[datetime, datetime]]:
+    merged: list[list[datetime]] = []
+    for start, end in sorted(windows):
+        if start >= end:
+            continue
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
 
 
 def enabled_recipes():
@@ -62,8 +91,8 @@ def _prepare_event(event: dict) -> PreparedEvent | None:
     """Project one normalized event against every matching recipe.
 
     Returns ``None`` when the event matches no recipe (it is retained nowhere).
-    Projection is best-effort; the whole event is compressed for replay unless
-    every matching recipe opts out of payload retention (lifecycle actions).
+    Projection is best-effort. Applied configuration events can retain their
+    whole payload for replay; failed VM events retain only sanitized details.
     """
     resource_type = event.get("resourceType")
     operation_name = event.get("operationName")
@@ -73,13 +102,20 @@ def _prepare_event(event: dict) -> PreparedEvent | None:
         return None
 
     columns: dict[str, object] = {}
+    error_details_gz = None
     pending = False
     for recipe in matched:
         result = project(event, recipe)
         columns.update(result.columns)
+        if result.error_details_gz is not None:
+            error_details_gz = result.error_details_gz
         pending = pending or result.reprojection_pending
 
-    retain_payload = any(recipe.retain_payload for recipe in matched)
+    retain_payload = any(
+        recipe.retain_payload
+        and (recipe.error_projection is None or (status or "").lower() == "accepted")
+        for recipe in matched
+    )
     return PreparedEvent(
         event_data_id=event.get("eventDataId"),
         event_timestamp=event.get("eventTimestamp"),
@@ -92,6 +128,7 @@ def _prepare_event(event: dict) -> PreparedEvent | None:
         operation_id=event.get("operationId"),
         correlation_id=event.get("correlationId"),
         columns=columns,
+        error_details_gz=error_details_gz,
         payload_gz=compress_payload(event) if retain_payload else None,
         payload_encoding=PAYLOAD_ENCODING if retain_payload else None,
         reprojection_pending=pending,
@@ -146,7 +183,11 @@ def _reconcile_operation(operation: dict, now: datetime, horizon: timedelta) -> 
     payload = operation.get("AppliedPayloadGz")
     if stale and payload:
         event = decompress_payload(payload)
-        columns: dict[str, object] = {}
+        columns = {
+            key: value
+            for key, value in (operation.get("Columns") or {}).items()
+            if key in ERROR_COLUMNS
+        }
         pending = False
         for recipe in matching_recipes(
             operation.get("ResourceType"), operation.get("OperationName"), event.get("status")
@@ -203,69 +244,117 @@ class ActivityLogPipeline:
         recipe_ids = sorted(recipe.id for recipe in recipes)
         versions = _recipe_versions(recipes)
 
-        cutoff = _utc_now() - timedelta(minutes=settings.activity_log_ingestion_lag_minutes())
-        retention_start = cutoff - timedelta(days=_RETENTION_DAYS)
-        historical_start = max(cutoff - timedelta(days=settings.activity_log_historical_days()), retention_start)
+        target_end = _complete_day_end(_utc_now())
+        retention_start = target_end - timedelta(days=_RETENTION_DAYS)
+        historical_start = max(
+            target_end - timedelta(days=settings.activity_log_historical_days()),
+            retention_start,
+        )
         overlap = timedelta(hours=settings.activity_log_refresh_overlap_hours())
 
         coverage_by_sub = {cov["subscriptionId"]: cov for cov in self._store.list_coverage()}
 
         work_units = []
-        new_state = []
         added = 0
         reconciled = 0
+        historical_backfills = 0
+        incremental = 0
         for subscription_id in sorted(scope["subs"]):
             cov = coverage_by_sub.get(subscription_id)
             drift = cov is not None and (
                 cov.get("materializedRecipeVersions") != versions
                 or sorted(cov.get("enabledRecipeIds") or []) != recipe_ids
             )
+            windows: list[tuple[datetime, datetime]] = []
             if cov is None:
-                start_dt = historical_start
+                windows.append((historical_start, target_end))
+                coverage_start = historical_start
+                coverage_end = target_end
                 added += 1
             elif drift:
-                start_dt = historical_start  # widened filter → bounded re-collection
+                windows.append((historical_start, target_end))
+                coverage_start = min(
+                    _parse_timestamp(cov["coverageStart"])
+                    if cov.get("coverageStart") else historical_start,
+                    historical_start,
+                )
+                coverage_end = max(
+                    _parse_timestamp(cov["coverageEnd"])
+                    if cov.get("coverageEnd") else target_end,
+                    target_end,
+                )
                 reconciled += 1
             else:
-                start_dt = max(_parse_timestamp(cov["coverageEnd"]) - overlap, retention_start)
+                prior_start = (
+                    _parse_timestamp(cov["coverageStart"])
+                    if cov.get("coverageStart") else target_end
+                )
+                prior_end = (
+                    _parse_timestamp(cov["coverageEnd"])
+                    if cov.get("coverageEnd") else historical_start
+                )
+                if prior_start > historical_start:
+                    windows.append((historical_start, min(prior_start, target_end)))
+                    historical_backfills += 1
+                if prior_end < target_end:
+                    windows.append((
+                        max(prior_end - overlap, historical_start),
+                        target_end,
+                    ))
+                    incremental += 1
+                coverage_start = min(prior_start, historical_start)
+                coverage_end = max(prior_end, target_end)
 
-            prior_start = (
-                _parse_timestamp(cov["coverageStart"]) if cov and cov.get("coverageStart") else start_dt
-            )
-            coverage_start = min(prior_start, start_dt)
+            windows = _merge_windows(windows)
+            if not windows:
+                continue
 
             work_units.append({
                 "subscriptionId": subscription_id,
-                "start": _format_timestamp(start_dt),
-                "end": _format_timestamp(cutoff),
+                "windows": [
+                    {
+                        "start": _format_timestamp(start),
+                        "end": _format_query_end(end, target_end),
+                    }
+                    for start, end in windows
+                ],
                 "coverage": {
                     "subscriptionId": subscription_id,
                     "coverageStart": _format_timestamp(coverage_start),
-                    "coverageEnd": _format_timestamp(cutoff),
+                    "coverageEnd": _format_timestamp(coverage_end),
                     "enabledRecipeIds": recipe_ids,
                     "materializedRecipeVersions": versions,
                 },
             })
-            new_state.append(work_units[-1]["coverage"])
 
-        reason = "initial-full" if not coverage_by_sub else ("reconcile" if reconciled or added else "refresh")
+        if reconciled:
+            reason = "reconcile"
+        elif added and added == len(work_units):
+            reason = "initial-full"
+        elif historical_backfills:
+            reason = "historical-backfill"
+        elif incremental or added:
+            reason = "incremental"
+        else:
+            reason = "up-to-date"
         return {
             "action": "load" if work_units else "noop",
             "reason": reason,
+            "targetStart": _format_timestamp(historical_start),
+            "targetEnd": _format_timestamp(target_end),
             "deletions": [],  # dropping a subscription stops collection; purge is explicit (Section 6)
             "workUnits": work_units,
             "operations": operations,
             "maxConcurrency": settings.activity_log_max_concurrency(),
             "replayMaxUnits": settings.activity_log_replay_max_units_per_run(),
-            "newState": new_state,
         }
 
     def fetch_and_store_page(self, request: dict) -> dict:
-        token = for_backend_operation().get_token()
-        result = fetch_page(request, token)
-        if result["status"] != "ok":
-            return result
         try:
+            token = for_backend_operation().get_token()
+            result = fetch_page(request, token)
+            if result["status"] != "ok":
+                return result
             operations = assemble_operations(result["events"])
             upserted = self._store.upsert_operations(operations)
             return {
@@ -277,7 +366,7 @@ class ActivityLogPipeline:
             }
         except Exception as exc:  # noqa: BLE001 — returned to Durable as a failed subscription
             logging.exception(
-                "Activity Log page persistence failed for subscription %s",
+                "Activity Log page fetch or persistence failed for subscription %s",
                 request.get("subscriptionId"),
             )
             return {"status": "error", "error": str(exc)}
@@ -337,28 +426,56 @@ class ActivityLogPipeline:
 
     def status(self, _request: dict) -> dict:
         scope = self._scope(for_backend_operation())
-        coverage = self._store.list_coverage()
-        cutoff = _utc_now() - timedelta(minutes=settings.activity_log_ingestion_lag_minutes())
+        coverage_by_sub = {
+            cov["subscriptionId"]: cov
+            for cov in self._store.list_coverage()
+            if cov.get("subscriptionId") in scope["subs"]
+        }
+        coverage = list(coverage_by_sub.values())
+        target_end = _complete_day_end(_utc_now())
+        target_start = max(
+            target_end - timedelta(days=settings.activity_log_historical_days()),
+            target_end - timedelta(days=_RETENTION_DAYS),
+        )
         coverage_starts = [cov["coverageStart"] for cov in coverage if cov.get("coverageStart")]
         coverage_ends = [cov["coverageEnd"] for cov in coverage if cov.get("coverageEnd")]
         coverage_start = min(coverage_starts) if coverage_starts else None
         coverage_end = min(coverage_ends) if coverage_ends else None  # worst-covered subscription
         staleness = (
             None if not coverage_end
-            else max(0, int((cutoff - _parse_timestamp(coverage_end)).total_seconds() // 60))
+            else max(0, int((target_end - _parse_timestamp(coverage_end)).total_seconds() // 60))
         )
         overlap_minutes = settings.activity_log_refresh_overlap_hours() * 60
+        versions = _recipe_versions(enabled_recipes())
+        recipe_ids = sorted(versions)
+        subscriptions_at_target = sum(
+            1
+            for subscription_id in scope["subs"]
+            if (
+                (cov := coverage_by_sub.get(subscription_id)) is not None
+                and cov.get("coverageStart")
+                and _parse_timestamp(cov["coverageStart"]) <= target_start
+                and cov.get("coverageEnd")
+                and _parse_timestamp(cov["coverageEnd"]) >= target_end
+                and cov.get("materializedRecipeVersions") == versions
+                and sorted(cov.get("enabledRecipeIds") or []) == recipe_ids
+            )
+        )
         return {
             "hasData": bool(coverage),
             "isRefreshEnabled": True,
             "warning": None,
-            "finalizedThrough": _format_timestamp(cutoff),
+            "finalizedThrough": _format_timestamp(target_end),
+            "targetStart": _format_timestamp(target_start),
+            "targetEnd": _format_timestamp(target_end),
             "coverageStart": coverage_start,
             "coverageEnd": coverage_end,
             "stalenessDays": None,
             "stalenessMinutes": staleness,
             "isStale": None if staleness is None else staleness > overlap_minutes,
             "subscriptionsCovered": len(coverage),
+            "subscriptionsAtTarget": subscriptions_at_target,
+            "subscriptionsDue": len(scope["subs"]) - subscriptions_at_target,
             "currentScope": self._describe(scope),
             "lastLoadedScope": None,
         }

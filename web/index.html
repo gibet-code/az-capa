@@ -24,6 +24,7 @@
   <script src="js/features/coverage-report-model.js"></script>
   <script src="js/features/notifications.js"></script>
   <script src="js/features/administration.js"></script>
+  <script src="js/features/allocation-events.js"></script>
   <script src="js/features/data-collection.js"></script>
   <script src="js/features/scope.js"></script>
   <script src="js/features/vm-coverage.js"></script>
@@ -192,6 +193,11 @@
         <a x-show="user.capabilities.useOdcr" :class="{ active: page === 'vm' }" @click="go('odcr/coverage')" title="On-Demand Capacity Reservations">
           <span class="nav-icon"><img src="icons/capacity-reservation-groups.svg" alt="" /></span>
           <span class="nav-label">ODCR</span>
+        </a>
+        <a x-show="user.capabilities.useOdcr" :class="{ active: page === 'allocation-events' }"
+          @click="go('allocation-events')" title="Allocation Events">
+          <span class="nav-icon"><img src="icons/virtual-machine.svg" alt="" /></span>
+          <span class="nav-label">Allocation Events</span>
         </a>
         <a class="settings-link" x-show="user.capabilities.administer" :class="{ active: page === 'settings' }" @click="go('settings')" title="Settings">
           <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.09A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3v-4h.09A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.09A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.6 1h.09v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg></span>
@@ -1486,12 +1492,448 @@
         </div>
       </template>
 
+      <!-- Allocation Events -->
+      <template x-if="page === 'allocation-events'">
+        <div class="vm-page">
+          <div class="page-head">
+            <div>
+              <h1>Allocation Events</h1>
+              <p class="muted">Virtual machines visible to your current Azure account.</p>
+            </div>
+          </div>
+
+          <div class="card vm-card">
+            <div class="vm-command-bar">
+              <button type="button" class="vm-command-button" @click="loadAllocationEventVms()"
+                :disabled="allocationVmsLoading">
+                <span class="vm-command-icon" :class="{ spinning: allocationVmsLoading }" aria-hidden="true">&#8635;</span>
+                <span>Refresh</span>
+              </button>
+              <button type="button" class="vm-command-button"
+                :disabled="!allocationVmsLoaded || allocationVmsLoading || allocationVmRows.length === 0"
+                @click="exportAllocationVmsCsv()">
+                <span class="vm-command-icon" aria-hidden="true">&#8681;</span>
+                <span>Export to CSV</span>
+              </button>
+              <div class="odcr-usage-controls allocation-events-controls">
+                <span class="odcr-metric-label">Period:</span>
+                <div class="allocation-period-switch" role="group" aria-label="Allocation success period">
+                  <button type="button" :class="{ active: allocationVmPeriod === '1d' }"
+                    :aria-pressed="allocationVmPeriod === '1d'" @click="setAllocationVmPeriod('1d')">1d</button>
+                  <button type="button" :class="{ active: allocationVmPeriod === '7d' }"
+                    :aria-pressed="allocationVmPeriod === '7d'" @click="setAllocationVmPeriod('7d')">7d</button>
+                  <button type="button" :class="{ active: allocationVmPeriod === '30d' }"
+                    :aria-pressed="allocationVmPeriod === '30d'" @click="setAllocationVmPeriod('30d')">30d</button>
+                </div>
+                <span class="info-tooltip" tabindex="0" :aria-label="allocationVmPeriodTooltip()">i
+                  <span class="tooltip-content allocation-period-tooltip" role="tooltip"
+                    x-text="allocationVmPeriodTooltip()"></span>
+                </span>
+                <label class="odcr-deleted-toggle">
+                  <input type="checkbox" :checked="allocationVmConfirmedFailuresOnly"
+                    @change="toggleAllocationVmConfirmedFailuresOnly()" />
+                  <span>Allocation failures only</span>
+                </label>
+                <label class="odcr-deleted-toggle">
+                  <input type="checkbox" :checked="allocationVmFailuresOnly"
+                    @change="toggleAllocationVmFailuresOnly()" />
+                  <span>VMs with failures only</span>
+                </label>
+              </div>
+            </div>
+
+            <div class="vm-filter-bar" @multi-select-change="onAllocationVmFilterChange($event.detail.key)">
+              <input type="text" class="filter-input vm-filter-search" placeholder="Filter for any field"
+                aria-label="Filter Allocation Events virtual machines" :value="allocationVmSearch"
+                @input.debounce.200ms="onAllocationVmSearchInput($event.target.value)" />
+              <template x-for="filter in allocationVmFilters" :key="filter.key">
+                <div class="multi-select" :class="{ open }" x-data="multiSelectDropdown(filter)"
+                  @click.outside="if (open) cancel()">
+                  <button x-ref="trigger" type="button" class="multi-select-trigger" :class="{ active: open }"
+                    @click="toggleMenu()" @keydown.escape.stop="cancel()" :aria-expanded="open"
+                    :title="config.label + ' equals ' + summary">
+                    <span class="multi-select-summary">
+                      <span class="multi-select-name" x-text="config.label"></span>
+                      <span class="multi-select-operator">equals</span>
+                      <strong x-text="globalScopeAppliesToFilter(config) && summary === 'all' ? 'all*' : summary"></strong>
+                    </span>
+                    <span class="multi-select-chevron" aria-hidden="true">&#9662;</span>
+                  </button>
+                  <div class="multi-select-menu" x-show="open" x-transition.opacity
+                    @keydown.escape.stop="cancel(); $refs.trigger && $refs.trigger.focus()">
+                    <div class="local-scope-note" x-show="globalScopeAppliesToFilter(config)">
+                      <span>(*) Global filters in effect.</span>
+                      <button type="button" @click.stop="cancel(); openScopeMenu()">Edit</button>
+                    </div>
+                    <input x-show="config.searchable" x-model="search" type="search"
+                      class="multi-select-search" :placeholder="'Search ' + config.label.toLowerCase()"
+                      :aria-label="'Search ' + config.label" />
+                    <label class="multi-select-option select-all" x-show="config.showSelectAll">
+                      <input type="checkbox" :checked="allSelected" :indeterminate.prop="someSelected"
+                        @change="toggleAll()" />
+                      <span>Select all</span>
+                    </label>
+                    <div class="multi-select-options">
+                      <template x-for="option in visibleOptions" :key="option.value">
+                        <label class="multi-select-option">
+                          <input type="checkbox" :checked="isSelected(option.value)"
+                            @change="toggleOption(option.value, $event.target.checked)" />
+                          <span x-text="option.label" :title="option.label"></span>
+                        </label>
+                      </template>
+                      <div class="multi-select-empty" x-show="visibleOptions.length === 0">No matching options</div>
+                    </div>
+                    <div class="multi-select-actions">
+                      <button type="button" class="btn" @click="apply()">Apply</button>
+                      <button type="button" class="btn ghost" @click="cancel()">Cancel</button>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <button type="button" class="vm-filter-reset" @click="resetLocalAllocationVmFilters()"
+                :disabled="!hasActiveLocalAllocationVmFilters">
+                Reset local filters
+              </button>
+            </div>
+
+            <div class="vm-table-frame">
+              <div class="vm-table-scroll">
+                <template x-if="allocationVmsLoading">
+                  <table class="vm-table allocation-events-table skeleton-table" aria-label="Loading Allocation Events virtual machines"
+                    aria-busy="true">
+                    <thead><tr>
+                      <th>Name</th>
+                      <th>Subscription</th>
+                      <template x-for="field in allocationVmBusinessContextFields" :key="field.key">
+                        <th x-text="field.name"></th>
+                      </template>
+                      <th>Resource group</th><th>Region</th><th>Deployment</th><th>Size</th><th>Power state</th>
+                      <th>Allocation success</th><th>Last allocation</th><th>Last failure</th><th>Details</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="row in [1, 2, 3, 4, 5, 6, 7, 8]" :key="row">
+                        <tr aria-hidden="true">
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <template x-for="field in allocationVmBusinessContextFields" :key="field.key">
+                            <td><span class="skeleton-block"></span></td>
+                          </template>
+                          <td><span class="skeleton-block"></span></td><td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td><td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td><td><span class="skeleton-block"></span></td>
+                          <td><span class="skeleton-block"></span></td><td><span class="skeleton-block"></span></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+                <template x-if="!allocationVmsLoading && allocationVmsLoaded && allocationVms.length === 0">
+                  <div class="empty">No virtual machines you can access.</div>
+                </template>
+                <template x-if="!allocationVmsLoading && allocationVms.length > 0 && allocationVmRows.length === 0">
+                  <div class="empty">No virtual machines match the selected filters.</div>
+                </template>
+                <template x-if="!allocationVmsLoading && allocationVmRows.length > 0">
+                  <table class="vm-table allocation-events-table">
+                    <thead><tr>
+                      <th :aria-sort="allocationVmSort.key === 'name' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('name')">Name <span x-text="allocationVmSortIndicator('name')"></span></button>
+                      </th>
+                      <th :aria-sort="allocationVmSort.key === 'subscriptionName' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('subscriptionName')">Subscription <span x-text="allocationVmSortIndicator('subscriptionName')"></span></button>
+                      </th>
+                      <template x-for="field in allocationVmBusinessContextFields" :key="field.key">
+                        <th :aria-sort="allocationVmSort.key === allocationVmBusinessContextFilterKey(field.key) ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                          <button class="sort-button" @click="cycleAllocationVmSort(allocationVmBusinessContextFilterKey(field.key))">
+                            <span x-text="field.name"></span> <span x-text="allocationVmSortIndicator(allocationVmBusinessContextFilterKey(field.key))"></span>
+                          </button>
+                        </th>
+                      </template>
+                      <th :aria-sort="allocationVmSort.key === 'resourceGroup' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('resourceGroup')">Resource group <span x-text="allocationVmSortIndicator('resourceGroup')"></span></button>
+                      </th>
+                      <th :aria-sort="allocationVmSort.key === 'location' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('location')">Region <span x-text="allocationVmSortIndicator('location')"></span></button>
+                      </th>
+                      <th class="tooltip-header" :aria-sort="allocationVmSort.key === 'deploymentType' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <span class="deployment-header">
+                          <button class="sort-button" @click="cycleAllocationVmSort('deploymentType')">Deployment <span x-text="allocationVmSortIndicator('deploymentType')"></span></button>
+                          <span class="zone-mode-control">
+                            <button type="button" class="zone-mode-switch" role="switch"
+                              :aria-checked="zoneDisplayMode === 'physical'" @click.stop="toggleZoneDisplay()"
+                              :aria-label="zoneDisplayMode === 'logical' ? 'Display physical availability zones' : 'Display logical availability zones'">
+                              <span :class="{ active: zoneDisplayMode === 'logical' }">Log</span>
+                              <span :class="{ active: zoneDisplayMode === 'physical' }">Phy</span>
+                            </button>
+                            <span class="tooltip-content zone-mode-tooltip" role="tooltip">
+                              <span class="tooltip-section">Each datacenter is assigned to a physical zone. Azure maps physical zones to logical zones in each subscription.</span>
+                              <span class="tooltip-section">Different subscriptions might use a different mapping order. Switch to physical zones to compare zone placement across subscriptions.</span>
+                              <span class="tooltip-section">
+                                <a href="https://learn.microsoft.com/en-us/azure/reliability/availability-zones-overview?tabs=azure-cli#physical-and-logical-availability-zones"
+                                  target="_blank" rel="noopener noreferrer">
+                                  Read about physical and logical availability zones
+                                  <span class="external-link-icon" aria-hidden="true">↗</span>
+                                  <span class="sr-only">(opens in a new tab)</span>
+                                </a>
+                              </span>
+                            </span>
+                          </span>
+                        </span>
+                      </th>
+                      <th :aria-sort="allocationVmSort.key === 'vmSize' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('vmSize')">Size <span x-text="allocationVmSortIndicator('vmSize')"></span></button>
+                      </th>
+                      <th :aria-sort="allocationVmSort.key === 'powerState' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('powerState')">Power state <span x-text="allocationVmSortIndicator('powerState')"></span></button>
+                      </th>
+                      <th class="allocation-success-column"
+                        :aria-sort="allocationVmSort.key === 'allocationSuccess' ? (allocationVmSort.direction === 'asc' ? 'ascending' : 'descending') : 'none'">
+                        <button class="sort-button" @click="cycleAllocationVmSort('allocationSuccess')">Allocation success <span x-text="allocationVmSortIndicator('allocationSuccess')"></span></button>
+                      </th>
+                      <th class="allocation-event-time-column">Last allocation</th>
+                      <th class="allocation-event-time-column">Last failure</th>
+                      <th class="allocation-detail-column">Details</th>
+                    </tr></thead>
+                    <tbody>
+                      <template x-for="vm in paginatedAllocationVms" :key="vm.id">
+                        <tr>
+                          <td>
+                            <span class="resource-name">
+                              <img class="resource-type-icon" :src="resourceTypeIcon(vm.resourceType)"
+                                :title="vm.resourceType || 'Azure resource'"
+                                @error="useGenericResourceIcon($event)" alt="" />
+                              <span x-text="vm.name"></span>
+                            </span>
+                          </td>
+                          <td x-text="vm.subscriptionName || vm.subscriptionId"></td>
+                          <template x-for="field in allocationVmBusinessContextFields" :key="field.key">
+                            <td :class="allocationVmBusinessContextValue(vm, field.key) === null ? 'context-unmapped' : ''"
+                              x-text="allocationVmBusinessContextDisplay(vm, field.key)"></td>
+                          </template>
+                          <td x-text="vm.resourceGroup"></td>
+                          <td x-text="locationDisplay(vm) || '—'"></td>
+                          <td x-text="allocationVmDeploymentDisplay(vm)"></td>
+                          <td x-text="vm.vmSize || '—'"></td>
+                          <td><span class="badge" :class="allocationVmPowerClass(vm.powerState)"
+                            x-text="vm.powerState || '—'"></span></td>
+                          <td class="allocation-success-cell" :class="allocationVmSuccessClass(vm)"
+                            :title="allocationVmSuccessTooltip(vm)">
+                            <span x-show="allocationVmSuccessMetric(vm).state === 'measured'"
+                              class="allocation-success-counts" x-text="allocationVmSuccessCounts(vm)"></span>
+                            <span x-show="allocationVmSuccessMetric(vm).state === 'measured'"
+                              class="allocation-success-rate" x-text="allocationVmSuccessRate(vm)"></span>
+                            <span x-show="allocationVmSuccessMetric(vm).state !== 'measured'"
+                              class="allocation-success-empty" x-text="allocationVmSuccessEmptyText(vm)"></span>
+                          </td>
+                          <td class="allocation-event-time allocation-event-time-column" :title="allocationVmLastAllocationTitle(vm)"
+                            x-text="allocationVmLastAllocationText(vm)"></td>
+                          <td class="allocation-event-time allocation-event-time-column" :title="allocationVmLastFailureTitle(vm)"
+                            x-text="allocationVmLastFailureText(vm)"></td>
+                          <td class="allocation-detail-column">
+                            <button type="button" class="vm-command-button allocation-detail-button"
+                              @click="openAllocationTimeline(vm, $event.currentTarget)"
+                              :aria-label="'View activity timeline for ' + vm.name">View timeline</button>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </template>
+              </div>
+              <div class="vm-table-footer">
+                <div class="vm-footer-left">
+                  <span class="vm-slice-count"
+                    x-text="'Showing ' + allocationVmPageStart() + ' - ' + allocationVmPageEnd() + ' of ' + allocationVmRows.length + '.'"></span>
+                  <label class="vm-page-size">
+                    <span>Display count:</span>
+                    <select :value="allocationVmPageSize" @change="setAllocationVmPageSize($event.target.value)"
+                      aria-label="Allocation Events virtual machines per page">
+                      <option value="20">20</option><option value="50">50</option>
+                      <option value="100">100</option><option value="200">200</option>
+                    </select>
+                  </label>
+                </div>
+                <nav class="vm-pagination" x-show="allocationVmRows.length > allocationVmPageSize"
+                  aria-label="Allocation Events virtual machine pages">
+                  <button type="button" class="vm-page-button" :disabled="allocationVmPage === 1"
+                    @click="setAllocationVmPage(1)" aria-label="First page" title="First page">&laquo;</button>
+                  <button type="button" class="vm-page-button" :disabled="allocationVmPage === 1"
+                    @click="setAllocationVmPage(allocationVmPage - 1)" aria-label="Previous page" title="Previous page">&lsaquo;</button>
+                  <span class="vm-page-status" x-text="'Page ' + allocationVmPage + ' of ' + allocationVmPageCount"></span>
+                  <button type="button" class="vm-page-button" :disabled="allocationVmPage === allocationVmPageCount"
+                    @click="setAllocationVmPage(allocationVmPage + 1)" aria-label="Next page" title="Next page">&rsaquo;</button>
+                  <button type="button" class="vm-page-button" :disabled="allocationVmPage === allocationVmPageCount"
+                    @click="setAllocationVmPage(allocationVmPageCount)" aria-label="Last page" title="Last page">&raquo;</button>
+                </nav>
+                <div class="vm-footer-right">
+                  <span x-show="allocationVmsLoading" class="spin" aria-label="Loading"></span>
+                  <span x-show="!allocationVmsLoading && allocationVmLoadDurationMs !== null"
+                    x-text="allocationVmLoadedSummaryText()"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
+
       <footer class="app-disclaimer" role="note">
         <strong>Disclaimer:</strong> Although Azure Capacity is developed by Microsoft employees, it is not a Microsoft
         service or product. Azure Capacity is an independently driven project. There are no implicit or explicit
         obligations related to this project; it is provided &quot;as is,&quot; with no warranties, and confers no rights.
       </footer>
     </main>
+
+    <template x-if="allocationTimelineVm">
+      <div class="drawer-backdrop" @click.self="closeAllocationTimeline()"
+        @keydown.escape.window="closeAllocationTimeline()">
+        <aside class="details-drawer allocation-timeline-drawer" role="dialog" aria-modal="true"
+          aria-labelledby="allocation-timeline-title">
+          <div class="details-drawer-head allocation-timeline-head">
+            <div class="drawer-resource-summary">
+              <h2 id="allocation-timeline-title">VM activity timeline</h2>
+              <div class="drawer-resource-name resource-name">
+                <img class="resource-type-icon" :src="resourceTypeIcon(allocationTimelineResource.resourceType)" alt=""
+                  @error="useGenericResourceIcon($event)" />
+                <strong x-text="allocationTimelineResource.name"></strong>
+              </div>
+              <div class="drawer-resource-meta">
+                <span>
+                  <span class="muted">Resource group</span>
+                  <strong x-text="allocationTimelineResource.resourceGroup || '—'"></strong>
+                </span>
+                <span>
+                  <span class="muted">Subscription</span>
+                  <strong x-text="allocationTimelineResource.subscriptionName || allocationTimelineResource.subscriptionId || '—'"></strong>
+                </span>
+                <span>
+                  <span class="muted">Location</span>
+                  <strong x-text="locationDisplay(allocationTimelineResource) || '—'"></strong>
+                </span>
+              </div>
+              <div class="allocation-timeline-coverage">
+                <span class="muted">Coverage</span>
+                <strong x-text="allocationTimelineLoading ? 'Loading coverage…' : allocationTimelineCoverageText()"></strong>
+                <span class="status-badge" x-show="allocationTimelineData"
+                  :class="allocationTimelineCoverageState() === 'complete' ? 'ok' : 'warn'"
+                  x-text="allocationTimelineCoverageState()"></span>
+                <span class="allocation-timeline-zone-mode">
+                  <span class="muted">Deployment zones</span>
+                  <button type="button" class="zone-mode-switch" role="switch"
+                    :aria-checked="zoneDisplayMode === 'physical'" @click="toggleZoneDisplay()"
+                    :aria-label="zoneDisplayMode === 'logical' ? 'Display physical availability zones' : 'Display logical availability zones'">
+                    <span :class="{ active: zoneDisplayMode === 'logical' }">Log</span>
+                    <span :class="{ active: zoneDisplayMode === 'physical' }">Phy</span>
+                  </button>
+                </span>
+              </div>
+            </div>
+            <button x-ref="allocationTimelineClose" type="button" class="icon-btn"
+              @click="closeAllocationTimeline()" aria-label="Close activity timeline">&times;</button>
+          </div>
+
+          <div class="details-drawer-body allocation-timeline-body">
+            <div class="allocation-timeline-loading" x-show="allocationTimelineLoading" aria-live="polite">
+              <span class="spin" aria-hidden="true"></span>
+              <span>Loading VM activity…</span>
+              <template x-for="row in [1, 2, 3, 4]" :key="row">
+                <div class="allocation-timeline-skeleton" aria-hidden="true">
+                  <span class="skeleton-block"></span>
+                  <span class="skeleton-block"></span>
+                </div>
+              </template>
+            </div>
+
+            <div class="allocation-timeline-error" x-show="!allocationTimelineLoading && allocationTimelineError"
+              role="alert">
+              <strong>Timeline could not be loaded</strong>
+              <span x-text="allocationTimelineError"></span>
+              <button type="button" class="btn" @click="retryAllocationTimeline()">Retry</button>
+            </div>
+
+            <div class="allocation-timeline-empty"
+              x-show="!allocationTimelineLoading && !allocationTimelineError && allocationTimelineData && allocationTimelineData.events.length === 0">
+              No lifecycle or configuration events were collected during this coverage period.
+            </div>
+
+            <div class="allocation-timeline"
+              x-show="!allocationTimelineLoading && !allocationTimelineError && allocationTimelineData && allocationTimelineData.events.length > 0">
+              <template x-for="group in allocationTimelineGroups" :key="group.key">
+                <section class="allocation-timeline-date-group" :aria-labelledby="'timeline-date-' + group.key">
+                  <h3 :id="'timeline-date-' + group.key" x-text="group.label"></h3>
+                  <ol>
+                    <template x-for="event in group.events" :key="event.id">
+                      <li class="allocation-timeline-event" :class="{ last: event.isLast }">
+                        <span class="allocation-timeline-rail" aria-hidden="true">
+                          <span class="allocation-timeline-dot"
+                            :class="allocationTimelineOutcomeClass(event.outcome)"></span>
+                        </span>
+                        <article class="allocation-timeline-panel"
+                          :class="{ current: event.recipe === 'current-state' }">
+                          <div class="allocation-timeline-event-head">
+                            <strong x-text="allocationTimelineEventTitle(event)"></strong>
+                            <span class="status-badge" :class="allocationTimelineOutcomeClass(event.outcome)"
+                              x-text="allocationTimelineOutcomeLabel(event.outcome)"></span>
+                          </div>
+                          <time :datetime="event.timestamp"
+                            x-text="formatDateTimeWithTimeZone(event.timestamp)"></time>
+                          <span class="allocation-timeline-relative"
+                            x-text="relativeTimeText(event.timestamp, { short: true })"></span>
+
+                          <div class="allocation-timeline-error-detail" x-show="event.error">
+                            <div class="allocation-timeline-error-head">
+                              <strong x-text="event.error && (event.error.code || 'Operation failed')"></strong>
+                              <span class="status-badge err" x-show="event.error && event.error.hasAllocationFailure">
+                                Allocation failure
+                              </span>
+                            </div>
+                            <span x-show="event.error && event.error.message"
+                              x-text="event.error && event.error.message"></span>
+                            <details class="allocation-timeline-error-details"
+                              x-show="event.error && event.error.detailCount > 0">
+                              <summary x-text="`Details (${event.error?.detailCount || 0})`"></summary>
+                              <ol>
+                                <template x-for="(detail, detailIndex) in (event.error?.details || [])"
+                                  :key="detailIndex">
+                                  <li>
+                                    <strong x-text="allocationTimelineErrorDetailTitle(detail, detailIndex)"></strong>
+                                    <span x-show="detail && detail.message" x-text="detail && detail.message"></span>
+                                  </li>
+                                </template>
+                              </ol>
+                            </details>
+                            <details class="allocation-timeline-error-json"
+                              x-show="event.error && event.error.detailCount > 0">
+                              <summary>View details JSON</summary>
+                              <pre x-text="allocationTimelineErrorJson(event)"></pre>
+                            </details>
+                          </div>
+
+                          <dl class="allocation-timeline-details"
+                            x-show="allocationTimelineDetailEntries(event).length > 0 || event.recipe === 'current-state' || allocationTimelineIsCreateEvent(event)">
+                            <div x-show="event.recipe === 'current-state' || allocationTimelineIsCreateEvent(event)">
+                              <dt>Availability zone</dt>
+                              <dd x-text="allocationTimelineZoneDisplay(event)"></dd>
+                            </div>
+                            <template x-for="detail in allocationTimelineDetailEntries(event)" :key="detail.key">
+                              <div>
+                                <dt x-text="detail.label"></dt>
+                                <dd x-text="detail.value" :title="detail.value"></dd>
+                              </div>
+                            </template>
+                          </dl>
+                        </article>
+                        <span class="allocation-timeline-gap" x-show="event.gapText" x-text="event.gapText"></span>
+                      </li>
+                    </template>
+                  </ol>
+                </section>
+              </template>
+            </div>
+          </div>
+        </aside>
+      </div>
+    </template>
 
     <template x-if="dcDetailsOpen">
       <div class="drawer-backdrop" @click.self="closeDetails()" @keydown.escape.window="closeDetails()">

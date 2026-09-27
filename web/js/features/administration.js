@@ -335,7 +335,6 @@ function createAdministrationFeature() {
             terminalStatuses: "Terminal statuses",
             historicalDays: "Historical days",
             refreshOverlapHours: "Refresh overlap (hours)",
-            ingestionLagMinutes: "Ingestion lag (minutes)",
             maxConcurrency: "Max concurrency",
             locations: "Locations",
             tableName: "Table name",

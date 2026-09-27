@@ -157,7 +157,9 @@ function createVmCoverageFeature() {
     },
 
     toggleZoneDisplay() {
-      for (const filters of [this.vmFilters, this.odcrUsageFilters]) {
+      const filterGroups = [this.vmFilters, this.odcrUsageFilters];
+      if (Array.isArray(this.allocationVmFilters)) filterGroups.push(this.allocationVmFilters);
+      for (const filters of filterGroups) {
         const filter = filters.find((item) => item.key === "deploymentType");
         filter.selected = filter.options.map((option) => option.value);
       }
@@ -167,6 +169,10 @@ function createVmCoverageFeature() {
       this.rebuildVmView();
       this.seedOdcrUsageDeploymentFilterOptions(this.odcrUsageRows);
       this.rebuildOdcrUsageView();
+      if (typeof this.seedAllocationVmDeploymentFilterOptions === "function") {
+        this.seedAllocationVmDeploymentFilterOptions();
+        this.rebuildAllocationVmView();
+      }
     },
 
     get hasActiveVmFilters() {

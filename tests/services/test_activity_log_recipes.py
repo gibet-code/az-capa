@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from services.activity_log import recipes
-from services.activity_log.recipes import ProjectedField, Recipe
+from services.activity_log.recipes import ErrorProjection, ProjectedField, Recipe
 
 
 class RecipeValidationTests(unittest.TestCase):
@@ -44,6 +44,14 @@ class RecipeValidationTests(unittest.TestCase):
             ProjectedField("", "x")
         with self.assertRaises(ValueError):
             ProjectedField("Col", "")
+        with self.assertRaises(ValueError):
+            ProjectedField("Col", "x", fallback_paths=("",))
+
+    def test_error_projection_requires_path_and_status(self):
+        with self.assertRaises(ValueError):
+            ErrorProjection("", "Failed")
+        with self.assertRaises(ValueError):
+            ErrorProjection("statusMessage.error", "")
 
 
 class RegistryTests(unittest.TestCase):
@@ -52,22 +60,50 @@ class RegistryTests(unittest.TestCase):
             {
                 "vm-configuration",
                 "vm-lifecycle",
-                "vmss-configuration",
                 "crg-configuration",
                 "cr-configuration",
-                "subscription-registration",
             },
             set(recipes.ids()),
         )
 
-    def test_subscription_registration_is_operation_only(self):
-        recipe = recipes.get("subscription-registration")
-        self.assertEqual((), recipe.resource_types)
-        self.assertEqual(("microsoft.management/register/action",), recipe.operation_names)
+    def test_unused_recipes_are_disabled(self):
+        self.assertIsNone(recipes.try_get("vmss-configuration"))
+        self.assertIsNone(recipes.try_get("subscription-registration"))
 
     def test_lifecycle_opts_out_of_payload_retention(self):
         self.assertFalse(recipes.get("vm-lifecycle").retain_payload)
         self.assertTrue(recipes.get("vm-configuration").retain_payload)
+
+    def test_lifecycle_collects_restart_and_specific_failure_detail(self):
+        recipe = recipes.get("vm-lifecycle")
+
+        self.assertEqual(3, recipe.version)
+        self.assertIn(
+            "microsoft.compute/virtualmachines/restart/action",
+            recipe.operation_names,
+        )
+        self.assertEqual("statusMessage.error", recipe.error_projection.path)
+        self.assertEqual("Failed", recipe.error_projection.on_status)
+
+    def test_vm_configuration_owns_fields_by_source_stage(self):
+        recipe = recipes.get("vm-configuration")
+
+        self.assertEqual(3, recipe.version)
+        fields = {field.column: field for field in recipe.projected_fields}
+        for column in (
+            "VmSize", "Location", "Zones", "ProvisioningState",
+            "CapacityReservationGroupId",
+        ):
+            self.assertEqual("Accepted", fields[column].on_status)
+        self.assertNotIn("ErrorCode", fields)
+        self.assertEqual("statusMessage.error", recipe.error_projection.path)
+        self.assertEqual("Failed", recipe.error_projection.on_status)
+
+    def test_vm_recipes_share_first_class_error_projection(self):
+        configuration = recipes.get("vm-configuration")
+        lifecycle = recipes.get("vm-lifecycle")
+
+        self.assertIs(configuration.error_projection, lifecycle.error_projection)
 
     def test_get_unknown_raises(self):
         with self.assertRaises(KeyError):

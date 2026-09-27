@@ -1,9 +1,4 @@
-"""Environment detection and Azure credential resolution.
-
-Reusable across triggers, orchestrators and activities. Local runs are detected
-via the ``AzureWebJobsStorage`` value that the Functions host sets from
-``local.settings.json`` (Azurite -> ``UseDevelopmentStorage=true``).
-"""
+"""Environment detection and Azure credential resolution."""
 import logging
 import os
 import threading
@@ -74,7 +69,10 @@ class _CachedTokenCredential(TokenCredential):
 
 
 def is_running_locally() -> bool:
-    """True when the host points at Azurite (local development storage)."""
+    """True when explicit local mode is enabled or default Azurite is configured."""
+    explicit = os.getenv("AZ_CAPACITY_LOCAL_DEVELOPMENT")
+    if explicit is not None:
+        return explicit.strip().lower() in {"1", "true", "yes", "on"}
     return os.getenv("AzureWebJobsStorage") == "UseDevelopmentStorage=true"
 
 

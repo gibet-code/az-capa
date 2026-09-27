@@ -33,7 +33,13 @@ def activity_log_refresh_orchestrator(context: df.DurableOrchestrationContext):
 def _activity_log_refresh(context: df.DurableOrchestrationContext):
     plan = yield context.call_activity("activity_log_resolve_plan", {})
     if plan["action"] == "noop":
-        return {"status": "completed", "action": plan["reason"], "subscriptions": 0}
+        return {
+            "status": "completed",
+            "action": plan["reason"],
+            "targetStart": plan.get("targetStart"),
+            "targetEnd": plan.get("targetEnd"),
+            "subscriptions": 0,
+        }
 
     deleted_rows = 0
     if plan.get("deletions"):
@@ -47,22 +53,66 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
     outcomes = []
     concurrency = plan["maxConcurrency"]
 
-    for start in range(0, total, concurrency):
-        batch = work_units[start:start + concurrency]
-        tasks = [
-            context.call_sub_orchestrator(
+    next_index = 0
+    in_flight = []
+    while next_index < total and len(in_flight) < concurrency:
+        unit = work_units[next_index]
+        task = context.call_sub_orchestrator(
+            "activity_log_subscription_orchestrator",
+            {
+                **unit,
+                "operations": plan["operations"],
+            },
+        )
+        in_flight.append((task, unit))
+        next_index += 1
+
+    while in_flight:
+        yield context.task_any([task for task, _unit in in_flight])
+        completed_entries = [
+            (task, unit) for task, unit in in_flight if task.is_completed
+        ]
+        in_flight = [
+            (task, unit)
+            for task, unit in in_flight
+            if not task.is_completed
+        ]
+
+        for completed_task, completed_unit in completed_entries:
+            outcome = completed_task.result
+            if not isinstance(outcome, dict):
+                outcome = {
+                    "subscriptionId": completed_unit["subscriptionId"],
+                    "success": False,
+                    "error": str(outcome),
+                    "received": 0,
+                    "upserted": 0,
+                }
+            outcomes.append(outcome)
+            completed += 1
+            context.set_custom_status(_progress(completed, total))
+
+        replacement_tasks = []
+        while next_index < total and len(in_flight) < concurrency:
+            unit = work_units[next_index]
+            task = context.call_sub_orchestrator(
                 "activity_log_subscription_orchestrator",
                 {
                     **unit,
                     "operations": plan["operations"],
                 },
             )
-            for unit in batch
-        ]
-        batch_outcomes = yield context.task_all(tasks)
-        outcomes.extend(batch_outcomes)
-        completed += len(batch)
-        context.set_custom_status(_progress(completed, total))
+            in_flight.append((task, unit))
+            replacement_tasks.append(task)
+            next_index += 1
+
+        if replacement_tasks:
+            # Force Durable to persist replacements before racing them against
+            # already-scheduled children on the next loop iteration.
+            dispatch_timer = context.create_timer(
+                context.current_utc_datetime + timedelta(seconds=1)
+            )
+            yield context.task_any([dispatch_timer, *replacement_tasks])
 
     failures = [outcome for outcome in outcomes if not outcome.get("success")]
 
@@ -88,9 +138,17 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
                 reconciled += result.get("reconciled", 0)
 
     committed = sum(1 for outcome in outcomes if outcome.get("committed"))
+    if failures and committed == 0:
+        status = "failed"
+    elif failures or reconcile_failures:
+        status = "partial"
+    else:
+        status = "completed"
     return {
-        "status": "completed" if not failures and not reconcile_failures else "partial",
+        "status": status,
         "action": plan["reason"],
+        "targetStart": plan.get("targetStart"),
+        "targetEnd": plan.get("targetEnd"),
         "subscriptions": total,
         "committedSubscriptions": committed,
         "deletedRows": deleted_rows,
@@ -104,62 +162,69 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
 
 @bp.orchestration_trigger(context_name="context")
 def activity_log_subscription_orchestrator(context: df.DurableOrchestrationContext):
+    return (yield from _activity_log_subscription(context))
+
+
+def _activity_log_subscription(context: df.DurableOrchestrationContext):
     request = context.get_input()
-    next_link = None
-    transient_attempts = 0
     received = 0
     upserted = 0
     pages = 0
 
-    while True:
-        page_request = {**request, "nextLink": next_link}
-        result = yield context.call_activity("activity_log_fetch_page", page_request)
-        status = result.get("status")
-        if status in ("throttled", "transient"):
-            transient_attempts += 1
-            if transient_attempts > MAX_PAGE_THROTTLES:
+    for window in request["windows"]:
+        next_link = None
+        transient_attempts = 0
+        while True:
+            page_request = {**request, **window, "nextLink": next_link}
+            result = yield context.call_activity("activity_log_fetch_page", page_request)
+            status = result.get("status")
+            if status in ("throttled", "transient"):
+                transient_attempts += 1
+                if transient_attempts > MAX_PAGE_THROTTLES:
+                    return {
+                        "subscriptionId": request["subscriptionId"],
+                        "success": False,
+                        "error": "exceeded max transient retries",
+                        "received": received,
+                        "upserted": upserted,
+                    }
+                wait = result.get("retryAfter", 5)
+                if status == "transient":
+                    wait = max(wait, min(5 * (2 ** (transient_attempts - 1)), 120))
+                due = context.current_utc_datetime + timedelta(seconds=wait)
+                yield context.create_timer(due)
+                continue
+            if status == "error":
                 return {
                     "subscriptionId": request["subscriptionId"],
                     "success": False,
-                    "error": "exceeded max transient retries",
+                    "error": result.get("error"),
                     "received": received,
                     "upserted": upserted,
                 }
-            wait = result.get("retryAfter", 5)
-            if status == "transient":
-                wait = max(wait, min(5 * (2 ** (transient_attempts - 1)), 120))
-            due = context.current_utc_datetime + timedelta(seconds=wait)
-            yield context.create_timer(due)
-            continue
-        if status == "error":
-            return {
-                "subscriptionId": request["subscriptionId"],
-                "success": False,
-                "error": result.get("error"),
-                "received": received,
-                "upserted": upserted,
-            }
 
-        transient_attempts = 0
-        pages += 1
-        received += result.get("received", 0)
-        upserted += result.get("upserted", 0)
-        next_link = result.get("nextLink")
-        if not next_link:
-            committed = False
-            coverage = request.get("coverage")
-            if coverage:
-                # Advance this subscription's coverage only after all its pages land.
-                yield context.call_activity("activity_log_write_state", [coverage])
-                committed = True
-            return {
-                "subscriptionId": request["subscriptionId"],
-                "success": True,
-                "committed": committed,
-                "pages": pages,
-                "received": received,
-                "upserted": upserted,
-            }
+            transient_attempts = 0
+            pages += 1
+            received += result.get("received", 0)
+            upserted += result.get("upserted", 0)
+            next_link = result.get("nextLink")
+            if not next_link:
+                break
+
+    committed = False
+    coverage = request.get("coverage")
+    if coverage:
+        # Advance this subscription only after every planned window fully lands.
+        yield context.call_activity("activity_log_write_state", [coverage])
+        committed = True
+    return {
+        "subscriptionId": request["subscriptionId"],
+        "success": True,
+        "committed": committed,
+        "pages": pages,
+        "received": received,
+        "upserted": upserted,
+    }
 
 
 @bp.orchestration_trigger(context_name="context")

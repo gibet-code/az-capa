@@ -130,6 +130,10 @@ progress { width: 160px; height: 8px; accent-color: var(--accent); }
   .odcr-chart-group-by { align-items: flex-end; flex-direction: column; gap: 3px; }
   .odcr-chart-group-by select { max-width: 150px; }
   .odcr-deleted-toggle { grid-column: 1 / -1; }
+  .allocation-events-controls {
+    grid-template-columns: auto 116px auto;
+  }
+  .allocation-events-controls .odcr-deleted-toggle { grid-column: 1 / -1; }
   .vm-filter-search { flex-basis: 100%; width: 100%; }
   .multi-select-menu { width: 100%; max-width: 100%; }
   .coverage-report {

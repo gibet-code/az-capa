@@ -164,10 +164,16 @@ function createScopeFeature() {
       this.globalScopeDraft = JSON.parse(JSON.stringify(scope));
       if (typeof this.persistGlobalScope === "function") this.persistGlobalScope(this.globalScope);
       this.scopeMenuOpen = false;
-      if (this.odcrTab === "usage") {
+      if (this.page === "allocation-events") {
+        this.vmsLoaded = false;
+        this.odcrUsageLoaded = false;
+        await this.loadAllocationEventVms(true);
+      } else if (this.odcrTab === "usage") {
+        this.allocationVmsLoaded = false;
         this.vmsLoaded = false;
         await this.loadOdcrUsage(true);
       } else {
+        this.allocationVmsLoaded = false;
         this.odcrUsageLoaded = false;
         await this.loadVms(true);
       }

@@ -10,9 +10,10 @@ administrator-owned application-scope mechanism.
 
 ## Purpose
 
-Global Filters apply one server-side scope to ODCR Coverage and ODCR Usage.
-Users may independently constrain Subscription, Location, and any enabled
-Business Context field. They do not modify collection scope or saved settings.
+Global Filters apply one server-side scope to Allocation Events, ODCR Coverage,
+and ODCR Usage. Users may independently constrain Subscription, Location, and
+any enabled Business Context field. They do not modify collection scope or
+saved settings.
 
 ## Global Filters Card
 
@@ -41,11 +42,11 @@ and show visible subscription counts. JSON `null` is **Not mapped**.
 
 Opening the card creates a draft copy. Cancel or clicking outside discards the
 draft. Save replaces the applied criteria, closes the card, and reloads the
-active report. The inactive report is invalidated and reloads when opened.
+active report. Inactive reports are invalidated and reload when opened.
 
 Remove all immediately replaces the applied criteria with unrestricted
 Subscription, Location, and Context state, persists that state, closes the
-card, reloads the active report, and invalidates the inactive report. It remains
+card, reloads the active report, and invalidates inactive reports. It remains
 available when the catalogue is unavailable or loading.
 
 Save is disabled while the catalogue is unavailable or loading, and when an
@@ -105,7 +106,7 @@ A valid combination that matches nothing returns zero rows.
 
 ## Report Request Contract
 
-Both reports receive the same optional POST properties:
+All reports receive the same optional POST properties:
 
 ```json
 {
@@ -128,8 +129,15 @@ Location arrays retain fail-closed behavior for non-UI callers.
 
 | Report | Endpoint |
 | --- | --- |
+| Allocation Events VM inventory | `POST /api/allocation-events/vms` |
 | Coverage | `POST /api/odcr/coverage` |
 | Usage | `POST /api/odcr_usage/list` |
+
+The Allocation Events timeline is a detail lookup, not a report-population
+query, so it does not accept Global Filter dimensions. Its
+`POST /api/allocation-events/timeline` route instead validates the exact VM
+against App Scope and a caller-token Resource Graph lookup before reading
+stored history. The UI can open it only from the already-filtered VM inventory.
 
 Legacy Coverage GET query filters remain supported. A blank legacy query value
 is unrestricted for compatibility.
