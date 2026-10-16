@@ -104,6 +104,8 @@ param privateDnsManagement = 'Deploy'
 | `SCHEDULER_RUN_STATE_TABLE_NAME` | `SchedulerRunState` | Removed (`SchedulerRunState`) | Redundant default |
 | `SCHEDULER_RUN_HISTORY_TABLE_NAME` | `SchedulerRunHistory` | Removed (`SchedulerRunHistory`) | Redundant default |
 | `SCHEDULER_CONFIG_TABLE_NAME` | `SchedulerConfig` | Removed (`SchedulerConfig`) | Redundant default |
+| `FEATURE_ACTIVATION_TABLE_NAME` | `FeatureActivation` | Removed (`FeatureActivation`) | Redundant default |
+| `FEATURE_ACTIVATION_L1_TTL_SECONDS` | `60`, minimum 1 | Removed (`60`) | Redundant default |
 
 ## Storage and identity reads
 

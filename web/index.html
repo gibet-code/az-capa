@@ -23,6 +23,7 @@
   <script src="js/features/odcr-usage.js"></script>
   <script src="js/features/coverage-report-model.js"></script>
   <script src="js/features/notifications.js"></script>
+  <script src="js/features/feature-activation.js"></script>
   <script src="js/features/administration.js"></script>
   <script src="js/features/allocation-events.js"></script>
   <script src="js/features/data-collection.js"></script>
@@ -42,7 +43,7 @@
         <span x-show="user.local" class="environment-badge">Local dev</span>
       </div>
       <div class="header-actions">
-        <div class="scope-control" x-show="user.capabilities.useOdcr" @click.outside="if (scopeMenuOpen) closeScopeMenu()">
+        <div class="scope-control" x-show="user.capabilities.useOdcr && featureEnabled('odcr')" @click.outside="if (scopeMenuOpen) closeScopeMenu()">
           <button type="button" class="header-icon-button scope-button" title="Global filters"
             :class="{ active: scopeMenuOpen || globalScopeActive }" @click="scopeMenuOpen ? closeScopeMenu() : openScopeMenu()"
             :aria-expanded="scopeMenuOpen" aria-label="Edit global filters">
@@ -190,11 +191,11 @@
 
     <aside class="sidebar" aria-label="Primary navigation">
       <nav class="nav">
-        <a x-show="user.capabilities.useOdcr" :class="{ active: page === 'vm' }" @click="go('odcr/coverage')" title="On-Demand Capacity Reservations">
+        <a x-show="user.capabilities.useOdcr && featureEnabled('odcr')" :class="{ active: page === 'vm' }" @click="go('odcr/coverage')" title="On-Demand Capacity Reservations">
           <span class="nav-icon"><img src="icons/capacity-reservation-groups.svg" alt="" /></span>
           <span class="nav-label">ODCR</span>
         </a>
-        <a x-show="user.capabilities.useOdcr" :class="{ active: page === 'allocation-events' }"
+        <a x-show="user.capabilities.useOdcr && featureEnabled('allocation_events')" :class="{ active: page === 'allocation-events' }"
           @click="go('allocation-events')" title="Allocation Events">
           <span class="nav-icon"><img src="icons/virtual-machine.svg" alt="" /></span>
           <span class="nav-label">Allocation Events</span>
@@ -226,6 +227,14 @@
         </div>
       </template>
 
+      <template x-if="page === 'feature-unavailable'">
+        <div class="card access-denied">
+          <h1>Features unavailable</h1>
+          <p x-text="featureLoadError || 'Feature activation could not be loaded.'"></p>
+          <button type="button" class="btn" @click="window.location.reload()">Reload</button>
+        </div>
+      </template>
+
       <!-- Settings -->
       <template x-if="page === 'settings'">
         <div>
@@ -233,10 +242,49 @@
 
           <div class="tabs">
             <button :class="{ active: tab === 'app' }" @click="selectTab('app')">App settings</button>
+            <button :class="{ active: tab === 'features' }" @click="selectTab('features')">Features</button>
             <button :class="{ active: tab === 'app-scope' }" @click="selectTab('app-scope')">App Scope</button>
             <button :class="{ active: tab === 'data' }" @click="selectTab('data')">Data Collection</button>
             <button :class="{ active: tab === 'business-context' }" @click="selectTab('business-context')">Business Context</button>
           </div>
+
+          <!-- Tab: Features -->
+          <template x-if="tab === 'features'">
+            <div class="card feature-activation-card">
+              <div class="card-head">
+                <div>
+                  <h3>Feature activation</h3>
+                  <span class="muted">At least one feature must remain enabled.</span>
+                </div>
+              </div>
+              <template x-if="adminFeatures">
+                <div class="feature-activation-list">
+                  <template x-for="feature in adminFeatures" :key="feature.id">
+                    <div class="feature-activation-row">
+                      <div>
+                        <strong x-text="feature.name"></strong>
+                        <span class="badge warn" x-show="feature.maturity === 'preview'">Preview</span>
+                      </div>
+                      <label class="scope-enable-toggle feature-activation-toggle"
+                        :class="{ disabled: featureToggleDisabled(feature) }"
+                        :title="feature.enabled && enabledAdminFeatureCount() === 1 ? 'At least one feature must remain enabled.' : ''">
+                        <input type="checkbox" role="switch" :checked="feature.enabled"
+                          :disabled="featureToggleDisabled(feature)"
+                          @change="setFeatureEnabled(feature, $event.target.checked)" />
+                        <span class="scope-toggle-track" aria-hidden="true"></span>
+                        <span x-text="feature.enabled ? 'On' : 'Off'"></span>
+                      </label>
+                    </div>
+                  </template>
+                </div>
+              </template>
+              <template x-if="!adminFeatures">
+                <div class="error">
+                  <span x-text="featureLoadError || 'Feature activation is unavailable.'"></span>
+                </div>
+              </template>
+            </div>
+          </template>
 
           <!-- Tab: App settings -->
           <template x-if="tab === 'app'">
@@ -480,7 +528,11 @@
                         <tbody>
                           <template x-for="row in dcPipelines" :key="row.id">
                             <tr>
-                              <td x-text="row.name"></td>
+                              <td>
+                                <div x-text="row.name"></div>
+                                <span class="muted" x-show="!row.required"
+                                  x-text="collectorRequirementText(row)"></span>
+                              </td>
                               <td>
                                 <span class="editable-cell">
                                   <span x-text="dcFrequencyText(row)"></span>
@@ -506,7 +558,9 @@
                               </td>
                               <td>
                                 <div class="row-actions">
-                                  <button class="btn" :disabled="row.running" @click="runOp(row.id, 'refresh')">Refresh</button>
+                                  <button class="btn" :disabled="row.running || !row.required"
+                                    :title="collectorRequirementText(row)"
+                                    @click="runOp(row.id, 'refresh')">Refresh</button>
                                   <button class="btn danger" x-show="row.supportsFlush" :disabled="row.running"
                                     @click="confirmFlush(row)">Flush</button>
                                   <button class="icon-btn" @click="openDetails(row)" title="Details" aria-label="Details">&#9432;</button>

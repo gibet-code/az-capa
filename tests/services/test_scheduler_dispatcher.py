@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
@@ -18,6 +19,16 @@ from storage.scheduler_state_store import SchedulerStateStore
 from tests.storage._fake_table import FakeTable
 
 _NOW = datetime(2026, 9, 2, 8, 0, tzinfo=timezone.utc)
+
+
+class FakeFeatureService:
+    def __init__(self, enabled: set[str] | None = None) -> None:
+        self.enabled = enabled or {"odcr", "allocation_events"}
+        self.calls = 0
+
+    def enabled_ids(self) -> frozenset[str]:
+        self.calls += 1
+        return frozenset(self.enabled)
 
 
 class FakeDurableClient:
@@ -55,11 +66,13 @@ class DispatcherTestBase(unittest.IsolatedAsyncioTestCase):
         config_table = FakeTable()
         self.config._table = lambda: config_table
         self.client = FakeDurableClient()
+        self.features = FakeFeatureService()
         self.now = _NOW
         self.dispatcher = DataCollectionDispatcher(
             state_store=self.state,
             history_store=self.history,
             config_store=self.config,
+            feature_service=self.features,
             clock=lambda: self.now,
         )
 
@@ -130,6 +143,48 @@ class StartTests(DispatcherTestBase):
 
         self.assertEqual("started", result.status)
 
+    async def test_refresh_not_started_when_no_enabled_feature_requires_it(self):
+        self.features.enabled = {"odcr"}
+
+        result = await self.dispatcher.start(self.client, "activity_log", "refresh", "manual")
+
+        self.assertEqual("not_required", result.status)
+        self.assertEqual([], self.client.started)
+
+    async def test_flush_allowed_when_no_enabled_feature_requires_collector(self):
+        self.features.enabled = {"odcr"}
+
+        result = await self.dispatcher.start(self.client, "activity_log", "flush", "manual")
+
+        self.assertEqual("started", result.status)
+
+    async def test_always_required_collector_does_not_read_feature_state(self):
+        result = await self.dispatcher.start(self.client, "cr_usage", "refresh", "manual")
+
+        self.assertEqual("started", result.status)
+        self.assertEqual(0, self.features.calls)
+
+    async def test_collector_with_multiple_dependencies_uses_any_enabled_feature(self):
+        descriptor = replace(
+            registry.get("activity_log"),
+            required_by_features=("odcr", "allocation_events"),
+        )
+        self.features.enabled = {"odcr"}
+
+        self.assertTrue(self.dispatcher.collector_required(descriptor))
+
+    def test_empty_feature_dependency_is_never_required_without_feature_read(self):
+        descriptor = replace(registry.get("activity_log"), required_by_features=())
+
+        self.assertFalse(self.dispatcher.collector_required(descriptor))
+        self.assertEqual(0, self.features.calls)
+
+    async def test_vm_usage_refresh_is_not_started_without_a_consumer(self):
+        result = await self.dispatcher.start(self.client, "vm_usage", "refresh", "manual")
+
+        self.assertEqual("not_required", result.status)
+        self.assertEqual([], self.client.started)
+
     async def test_flush_on_non_flush_pipeline_raises(self):
         with self.assertRaises(ValueError):
             await self.dispatcher.start(self.client, "subscription_reference", "flush", "manual")
@@ -183,6 +238,13 @@ class TickTests(DispatcherTestBase):
         self.assertIn("subscription_reference_refresh_orchestrator", started)
         # Subscription Reference (lowest priority) warms first.
         self.assertEqual("subscription_reference_refresh_orchestrator", self.client.started[0][0])
+
+    async def test_tick_does_not_attempt_activity_log_when_feature_is_disabled(self):
+        self.features.enabled = {"odcr"}
+
+        await self.dispatcher.tick(self.client)
+
+        self.assertNotIn("activity_log_refresh_orchestrator", self.client.started_orchestrators())
 
     async def test_cost_management_group_serialized_to_one_per_tick(self):
         await self.dispatcher.tick(self.client)
@@ -442,13 +504,13 @@ class DeleteRunTests(DispatcherTestBase):
     async def test_clear_terminal_runs_keeps_running(self):
         done = await self.dispatcher.start(self.client, "cr_usage", "refresh", "manual")
         self.dispatcher.record_outcome("cr_usage", done.instance_id, "completed")
-        await self.dispatcher.start(self.client, "vm_usage", "refresh", "manual")
+        await self.dispatcher.start(self.client, "zone_mapping", "refresh", "manual")
 
         deleted = self.dispatcher.clear_terminal_runs()
 
         self.assertEqual(1, deleted)
         self.assertEqual([], self.history.list_by_pipeline("cr_usage"))
-        self.assertEqual(1, len(self.history.list_by_pipeline("vm_usage")))
+        self.assertEqual(1, len(self.history.list_by_pipeline("zone_mapping")))
 
 
 class ListPipelinesTests(DispatcherTestBase):
@@ -625,6 +687,17 @@ class NormalizeProgressTests(unittest.TestCase):
             {"complete": 0.4, "label": "2/5 subscriptions completed"},
             normalize_progress(
                 {"completedSubscriptions": 2, "totalSubscriptions": 5, "percentCompleted": 40}
+            ),
+        )
+        self.assertEqual(
+            {"complete": 0.4, "label": "2/5 subscriptions reconciled"},
+            normalize_progress(
+                {
+                    "completedSubscriptions": 2,
+                    "totalSubscriptions": 5,
+                    "percentCompleted": 40,
+                    "phase": "reconciliation",
+                }
             ),
         )
 

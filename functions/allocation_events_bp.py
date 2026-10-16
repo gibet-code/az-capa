@@ -10,6 +10,7 @@ import azure.functions as func
 from core import identity
 from services import request_dimensions
 from services import allocation_events
+from services.feature_activation import ALLOCATION_EVENTS
 
 from . import _authorization as authorization
 from ._app_scope_http import app_scope_error_response
@@ -52,7 +53,7 @@ def _timeline_resource_id(req: func.HttpRequest) -> str:
 def allocation_event_vms(req: func.HttpRequest) -> func.HttpResponse:
     """List VMs visible to the signed-in user within the configured app scope."""
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ALLOCATION_EVENTS)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
 
@@ -98,7 +99,7 @@ def allocation_event_vms(req: func.HttpRequest) -> func.HttpResponse:
 def allocation_event_timeline(req: func.HttpRequest) -> func.HttpResponse:
     """Return projected history for one VM visible to the signed-in user."""
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ALLOCATION_EVENTS)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
 

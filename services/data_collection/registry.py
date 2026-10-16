@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from services import feature_activation
+
 _ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 
 # Contention groups (pipelines sharing one must not run concurrently).
@@ -31,12 +33,18 @@ class PipelineDescriptor:
     default_enabled: bool
     supports_flush: bool
     can_disable: bool
+    required_by_features: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if not _ID_PATTERN.match(self.id):
             raise ValueError(f"Invalid pipeline id {self.id!r}")
         if self.supports_flush and not self.flush_orchestrator:
             raise ValueError(f"Pipeline {self.id!r} supports flush but has no flush orchestrator")
+        unknown_features = set(self.required_by_features or ()).difference(feature_activation.ids())
+        if unknown_features:
+            raise ValueError(
+                f"Pipeline {self.id!r} requires unknown features {sorted(unknown_features)!r}"
+            )
 
 
 # Priority orders dispatch within a tick (lower runs first). Subscription
@@ -126,6 +134,7 @@ _DESCRIPTORS: tuple[PipelineDescriptor, ...] = (
         default_enabled=True,
         supports_flush=True,
         can_disable=True,
+        required_by_features=(),
     ),
     PipelineDescriptor(
         id="activity_log",
@@ -140,6 +149,7 @@ _DESCRIPTORS: tuple[PipelineDescriptor, ...] = (
         default_enabled=True,
         supports_flush=True,
         can_disable=True,
+        required_by_features=(feature_activation.ALLOCATION_EVENTS,),
     ),
     PipelineDescriptor(
         id="zone_mapping",

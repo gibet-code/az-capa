@@ -893,6 +893,10 @@ global.fetch = async (url) => {
       capabilities: { useOdcr: true, administer: false },
     }),
   };
+  if (url === "/api/features") return {
+    ok: true,
+    json: async () => ({ features: [{ id: "odcr", enabled: true }] }),
+  };
   throw new Error(`Unexpected fetch: ${url}`);
 };
 global.setInterval = () => 0;
@@ -942,6 +946,7 @@ root._preferenceInitialization.then(() => {
             "js/shared/preference-store.js",
             "js/shared/http.js",
             "js/features/scope.js",
+            "js/features/feature-activation.js",
             "app.js",
         ])
 
@@ -980,6 +985,10 @@ global.fetch = async (url) => {
   if (url === "/api/me") return {
     ok: true,
     json: async () => ({ local: true, capabilities: { useOdcr: true, administer: false } }),
+  };
+  if (url === "/api/features") return {
+    ok: true,
+    json: async () => ({ features: [{ id: "odcr", enabled: true }] }),
   };
   if (url === "/api/global-filters/catalogue") return {
     ok: true,
@@ -1026,6 +1035,7 @@ root._preferenceInitialization.then(() => {
             "js/shared/preference-store.js",
             "js/shared/http.js",
             "js/features/scope.js",
+            "js/features/feature-activation.js",
             "app.js",
         ])
 
@@ -1067,6 +1077,10 @@ global.fetch = async (url) => {
     ok: true,
     json: async () => ({ local: true, capabilities: { useOdcr: true, administer: false } }),
   };
+  if (url === "/api/features") return {
+    ok: true,
+    json: async () => ({ features: [{ id: "odcr", enabled: true }] }),
+  };
   if (url === "/api/global-filters/catalogue") throw new Error("Catalogue unavailable");
   throw new Error(`Unexpected fetch: ${url}`);
 };
@@ -1103,6 +1117,7 @@ root._preferenceInitialization.then(() => console.log(JSON.stringify({
             "js/shared/preference-store.js",
             "js/shared/http.js",
             "js/features/scope.js",
+            "js/features/feature-activation.js",
             "app.js",
         ])
 

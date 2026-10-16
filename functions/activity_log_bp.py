@@ -25,6 +25,13 @@ def _progress(completed: int, total: int) -> dict:
     }
 
 
+def _reconciliation_progress(completed: int, total: int) -> dict:
+    return {
+        **_progress(completed, total),
+        "phase": "reconciliation",
+    }
+
+
 @bp.orchestration_trigger(context_name="context")
 def activity_log_refresh_orchestrator(context: df.DurableOrchestrationContext):
     return (yield from with_run_recording(context, "activity_log", _activity_log_refresh(context)))
@@ -122,20 +129,58 @@ def _activity_log_refresh(context: df.DurableOrchestrationContext):
     reconciled = 0
     reconcile_failures = []
     subscription_ids = [unit["subscriptionId"] for unit in work_units]
-    for start in range(0, len(subscription_ids), concurrency):
-        batch = subscription_ids[start:start + concurrency]
-        tasks = [
-            context.call_activity(
-                "activity_log_reconcile",
-                {"subscriptionId": subscription_id, "maxUnits": plan["replayMaxUnits"]},
-            )
-            for subscription_id in batch
+    reconcile_completed = 0
+    reconcile_next_index = 0
+    reconcile_in_flight = []
+    context.set_custom_status(_reconciliation_progress(reconcile_completed, total))
+
+    while reconcile_next_index < total and len(reconcile_in_flight) < concurrency:
+        subscription_id = subscription_ids[reconcile_next_index]
+        task = context.call_activity(
+            "activity_log_reconcile",
+            {"subscriptionId": subscription_id, "maxUnits": plan["replayMaxUnits"]},
+        )
+        reconcile_in_flight.append(task)
+        reconcile_next_index += 1
+
+    while reconcile_in_flight:
+        yield context.task_any(reconcile_in_flight)
+        completed_tasks = [task for task in reconcile_in_flight if task.is_completed]
+        reconcile_in_flight = [
+            task for task in reconcile_in_flight if not task.is_completed
         ]
-        for result in (yield context.task_all(tasks)):
+
+        for completed_task in completed_tasks:
+            result = completed_task.result
+            if not isinstance(result, dict):
+                result = {
+                    "status": "error",
+                    "error": str(result),
+                    "reconciled": 0,
+                }
             if result.get("status") == "error":
                 reconcile_failures.append(result)
             else:
                 reconciled += result.get("reconciled", 0)
+            reconcile_completed += 1
+            context.set_custom_status(_reconciliation_progress(reconcile_completed, total))
+
+        replacement_tasks = []
+        while reconcile_next_index < total and len(reconcile_in_flight) < concurrency:
+            subscription_id = subscription_ids[reconcile_next_index]
+            task = context.call_activity(
+                "activity_log_reconcile",
+                {"subscriptionId": subscription_id, "maxUnits": plan["replayMaxUnits"]},
+            )
+            reconcile_in_flight.append(task)
+            replacement_tasks.append(task)
+            reconcile_next_index += 1
+
+        if replacement_tasks:
+            dispatch_timer = context.create_timer(
+                context.current_utc_datetime + timedelta(seconds=1)
+            )
+            yield context.task_any([dispatch_timer, *replacement_tasks])
 
     committed = sum(1 for outcome in outcomes if outcome.get("committed"))
     if failures and committed == 0:

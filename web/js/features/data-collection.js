@@ -107,7 +107,14 @@ function createDataCollectionFeature() {
 
     // A disabled pipeline runs on manual refresh only; an enabled one shows its cadence.
     dcFrequencyText(row) {
+      if (!row.required) return "Not required";
       return row.enabled && row.frequencySeconds ? this.dcFrequencyLabel(row.frequencySeconds) : "Manual";
+    },
+
+    collectorRequirementText(row) {
+      if (row.required || row.requiredByFeatures === null) return "";
+      if (!row.requiredByFeatures.length) return "No feature currently requires this collector";
+      return `Requires an enabled feature: ${row.requiredByFeatures.join(" or ")}`;
     },
 
     // True when an enabled pipeline's next scheduled run is now overdue.

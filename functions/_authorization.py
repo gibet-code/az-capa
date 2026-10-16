@@ -16,6 +16,7 @@ from typing import Iterable
 import azure.functions as func
 
 from core import credentials
+from services import feature_activation
 
 USER_ROLE = "User"
 ADMIN_ROLE = "Admin"
@@ -142,10 +143,29 @@ def principal(req: func.HttpRequest) -> ClientPrincipal:
     return _azure_principal(req)
 
 
-def require_user(req: func.HttpRequest) -> ClientPrincipal:
+def require_user(
+    req: func.HttpRequest,
+    feature: str | None = None,
+) -> ClientPrincipal:
     current = principal(req)
     if not current.roles.intersection({USER_ROLE, ADMIN_ROLE}):
         raise AuthorizationError(403, "forbidden", "The User or Admin app role is required.")
+    if feature is not None:
+        try:
+            enabled = feature_activation.service.is_enabled(feature)
+        except feature_activation.FeatureStateUnavailableError as exc:
+            raise AuthorizationError(
+                503, "feature_state_unavailable", str(exc)
+            ) from exc
+        except feature_activation.UnknownFeatureError as exc:
+            raise AuthorizationError(500, "unknown_feature", str(exc)) from exc
+        if not enabled:
+            descriptor = feature_activation.get_descriptor(feature)
+            raise AuthorizationError(
+                403,
+                "feature_disabled",
+                f"{descriptor.name} is not enabled.",
+            )
     return current
 
 

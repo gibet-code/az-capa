@@ -72,6 +72,7 @@ _ASSETS = {
     "styles/drawers.css",
     "styles/responsive.css",
     "js/features/administration.js",
+    "js/features/feature-activation.js",
     "js/features/allocation-events.js",
     "js/features/data-collection.js",
     "js/features/coverage-editor.js",

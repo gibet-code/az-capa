@@ -80,7 +80,8 @@ single source of truth the dispatcher and facade iterate.
   "defaultAnchorSeconds": 23400,
   "defaultEnabled": true,
   "supportsFlush": true,
-  "canDisable": true
+  "canDisable": true,
+  "requiredByFeatures": null
 }
 ```
 
@@ -101,9 +102,20 @@ single source of truth the dispatcher and facade iterate.
   schedule. **Subscription Reference** sets it `false` — it is infrastructural
   (App Scope warm) and must always run; the list surfaces the flag so the UI
   greys out its enable/disable control, and `PATCH config` refuses to disable it.
+- `requiredByFeatures` is `null` for a collector that is always required, an
+  empty list for a collector with no current consumer, or a non-empty list of
+  feature IDs when any enabled listed feature requires the collector. VM Usage
+  currently uses an empty list. Activity Log is required by
+  `allocation_events`. An unknown feature ID is invalid registry configuration.
 
 Registering a pipeline in this list is the only step needed to schedule it;
 there is no per-pipeline timer to add.
+
+Before cadence, busy-state, or Durable launch checks, the dispatcher skips a
+collector that is not required by any enabled feature. This gate also rejects
+manual refresh, while status, run history, and flush remain available. Feature
+activation does not rewrite scheduler enablement or cadence, and disabling a
+feature does not terminate an already-running orchestration.
 
 ### 2. Facade HTTP surface
 

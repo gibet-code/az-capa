@@ -32,6 +32,21 @@ h2 { font-size: 15px; margin: 24px 0 10px; }
 
 .tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
 
+.feature-activation-card { max-width: 760px; }
+.feature-activation-card .card-head > div { display: flex; flex-direction: column; gap: 3px; }
+.feature-activation-list { border-top: 1px solid var(--border); }
+.feature-activation-row {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--border);
+}
+.feature-activation-row > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.feature-activation-toggle { flex: none; }
+.feature-activation-toggle.disabled { opacity: 0.5; cursor: not-allowed; }
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);

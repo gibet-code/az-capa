@@ -66,6 +66,10 @@
     "DATA_COLLECTION_MAX_FREQUENCY_SECONDS": "2592000",
     "SCHEDULER_RUN_STATE_TABLE_NAME": "SchedulerRunState",
     "SCHEDULER_RUN_HISTORY_TABLE_NAME": "SchedulerRunHistory",
-    "SCHEDULER_CONFIG_TABLE_NAME": "SchedulerConfig"
+    "SCHEDULER_CONFIG_TABLE_NAME": "SchedulerConfig",
+
+    "// feature activation": "Application-wide feature state. Missing storage uses code defaults without writing.",
+    "FEATURE_ACTIVATION_TABLE_NAME": "FeatureActivation",
+    "FEATURE_ACTIVATION_L1_TTL_SECONDS": "60"
   }
 }

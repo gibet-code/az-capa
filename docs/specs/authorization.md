@@ -55,8 +55,11 @@ history purge, and Azure calls. HTTP routes use the following policy:
 | Surface | Policy |
 |---|---|
 | Static SPA and `/api/me` | Easy Auth authentication; `/api/me` returns normalized identity and capabilities. |
+| `GET /api/features` | User policy without a feature gate; bootstraps effective navigation. |
+| `PATCH /api/features/{featureId}` | Admin policy. |
 | `/api/me/role` | Local-only; returns 404 in Azure. |
-| Allocation Events, ODCR scope, filter catalogue, coverage, usage, and coverage-decision routes | User policy. |
+| Allocation Events routes | User policy plus enabled `allocation_events` feature. |
+| ODCR scope, filter catalogue, coverage, usage, and coverage-decision routes | User policy plus enabled `odcr` feature. |
 | Settings and App Scope diagnostics | Admin policy. |
 | Pipeline status, refresh, and flush routes | Admin policy. |
 | Notifications GET and DELETE routes | Admin policy. |
@@ -126,8 +129,11 @@ locally. The SPA resolves it before loading protected data:
 - `Admin` also sees Settings and Notifications.
 - A principal with neither role sees the denied state.
 
-The SPA does not call or poll hidden Admin APIs and redirects manually entered
-Admin routes to ODCR for non-admin users. Backend guards remain authoritative.
+The SPA loads effective feature activation once after `/api/me`, does not poll,
+and hides disabled feature navigation until the next full reload. It does not
+call or poll hidden Admin APIs and redirects manually entered Admin or disabled
+feature routes to the first enabled feature for non-admin users. Backend guards
+remain authoritative.
 
 Local development uses an HttpOnly, SameSite=Lax role cookie with `Admin`,
 `User`, and `None` contexts. It defaults to `Admin`. The cookie is ignored in

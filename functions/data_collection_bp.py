@@ -14,6 +14,7 @@ import azure.functions as func
 
 from services.data_collection import registry
 from services.data_collection.dispatcher import ConfigUpdateError, DataCollectionDispatcher
+from services.feature_activation import FeatureStateUnavailableError
 
 from . import _authorization as authorization
 from ._durable import DurableClientAdapter
@@ -104,7 +105,10 @@ async def data_collection_list(
         authorization.require_admin(req)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
-    pipelines = await get_dispatcher().list_pipelines(DurableClientAdapter(client))
+    try:
+        pipelines = await get_dispatcher().list_pipelines(DurableClientAdapter(client))
+    except FeatureStateUnavailableError as exc:
+        return _json({"error": "feature_state_unavailable", "message": str(exc)}, 503)
     return _json({"pipelines": pipelines})
 
 
@@ -122,9 +126,12 @@ async def data_collection_status(
         return _not_found(pipeline_id)
 
     detail = _status_body(pipeline_id)
-    envelope = await get_dispatcher().pipeline_status(
-        DurableClientAdapter(client), pipeline_id, detail
-    )
+    try:
+        envelope = await get_dispatcher().pipeline_status(
+            DurableClientAdapter(client), pipeline_id, detail
+        )
+    except FeatureStateUnavailableError as exc:
+        return _json({"error": "feature_state_unavailable", "message": str(exc)}, 503)
     # Spread the pipeline body at top level too, so the details drawer's status
     # panel (which reads flat freshness fields) works alongside the §2.2 envelope.
     return _json({**detail, **envelope})
@@ -176,9 +183,20 @@ async def data_collection_action(
             405,
         )
 
-    result = await get_dispatcher().start(
-        DurableClientAdapter(client), pipeline_id, action, "manual"
-    )
+    try:
+        result = await get_dispatcher().start(
+            DurableClientAdapter(client), pipeline_id, action, "manual"
+        )
+    except FeatureStateUnavailableError as exc:
+        return _json({"error": "feature_state_unavailable", "message": str(exc)}, 503)
+    if result.status == "not_required":
+        return _json(
+            {
+                "error": "collector_not_required",
+                "message": f"{descriptor.label} is not required by any enabled feature.",
+            },
+            409,
+        )
     if result.status == "busy":
         return _json(
             {

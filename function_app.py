@@ -10,6 +10,7 @@ from functions.allocation_events_bp import bp as allocation_events_bp
 from functions.compute_skus_bp import bp as compute_skus_bp
 from functions.cr_usage_bp import bp as cr_usage_bp
 from functions.data_collection_bp import bp as data_collection_bp
+from functions.features_bp import bp as features_bp
 from functions.location_reference_bp import bp as location_reference_bp
 from functions.subscription_context_bp import bp as subscription_context_bp
 from functions.subscription_reference_bp import bp as subscription_reference_bp
@@ -34,6 +35,7 @@ app.register_blueprint(subscription_reference_bp)
 app.register_blueprint(location_reference_bp)
 app.register_blueprint(subscription_context_bp)
 app.register_blueprint(data_collection_bp)
+app.register_blueprint(features_bp)
 app.register_blueprint(odcr_usage_bp)
 app.register_blueprint(odcr_coverage_bp)
 app.register_blueprint(web_bp)

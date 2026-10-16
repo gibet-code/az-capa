@@ -56,6 +56,27 @@ class WebAssetTests(unittest.TestCase):
         self.assertIn("switchLocalRole(role)", index)
         self.assertIn("['Admin', 'User', 'None']", index)
 
+    def test_feature_activation_is_loaded_once_and_gates_navigation(self):
+        index = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")
+        feature = (
+            WEB_DIR / "js" / "features" / "feature-activation.js"
+        ).read_text(encoding="utf-8")
+        web_bp = (WEB_DIR.parent / "functions" / "web_bp.py").read_text(encoding="utf-8")
+
+        self.assertIn('src="js/features/feature-activation.js"', index)
+        self.assertIn("selectTab('features')", index)
+        self.assertIn("At least one feature must remain enabled.", index)
+        self.assertIn("Allocation Events", index)
+        self.assertIn("featureEnabled('odcr')", index)
+        self.assertIn("featureEnabled('allocation_events')", index)
+        self.assertIn("await this.loadFeatureSnapshot()", app_js)
+        self.assertIn('requestJson("/api/features"', feature)
+        self.assertNotIn("setInterval", feature)
+        self.assertIn("this.adminFeatures = this.adminFeatures.map", feature)
+        self.assertNotIn("this.featureSnapshot =", feature.split("async setFeatureEnabled", 1)[1])
+        self.assertIn('"js/features/feature-activation.js"', web_bp)
+
     def test_allocation_events_vm_inventory_is_wired_to_shared_table_architecture(self):
         index = (WEB_DIR / "index.html").read_text(encoding="utf-8")
         app_js = (WEB_DIR / "app.js").read_text(encoding="utf-8")

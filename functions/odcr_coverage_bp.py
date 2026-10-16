@@ -21,6 +21,7 @@ from services.app_scope import resolve_app_scope
 from . import _authorization as authorization
 from ._app_scope_http import app_scope_error_response
 from services import compute_skus, odcr_coverage_decisions, request_dimensions, zone_mapping
+from services.feature_activation import ODCR
 from services.subscription_context import enrich_rows_with_business_context
 from services.odcr_coverage_decisions import build_visibility_query, parse_decision_change, subscription_id_from_resource_id
 from clients.resource_graph import get_subscription_inventory, run_graph_query
@@ -90,7 +91,7 @@ def _vm_request_filters(req: func.HttpRequest) -> dict[str, list[str] | None]:
 def subscription_inventory(req: func.HttpRequest) -> func.HttpResponse:
     """List user-visible subscriptions within the configured application boundary."""
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ODCR)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
     try:
@@ -127,7 +128,7 @@ def subscription_inventory(req: func.HttpRequest) -> func.HttpResponse:
 @bp.route(route="api/global-filters/catalogue", methods=["GET"])
 def global_filters_catalogue(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ODCR)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
     try:
@@ -169,7 +170,7 @@ def global_filters_catalogue(req: func.HttpRequest) -> func.HttpResponse:
 def vm_list(req: func.HttpRequest) -> func.HttpResponse:
     """List VMs the signed-in user can read (portal parity, via Resource Graph)."""
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ODCR)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
     started_at = time.perf_counter()
@@ -381,7 +382,7 @@ def _json_response(body: dict, status_code: int = 200) -> func.HttpResponse:
 def update_odcr_coverage_decisions(req: func.HttpRequest) -> func.HttpResponse:
     """Apply one shared ODCR coverage decision to one or more visible VMs."""
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ODCR)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
     try:

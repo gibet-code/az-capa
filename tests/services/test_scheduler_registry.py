@@ -35,6 +35,9 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual("cost_management", registry.get("cr_usage").contention_group)
         self.assertEqual("cost_management", registry.get("vm_usage").contention_group)
 
+    def test_vm_usage_has_no_current_feature_consumer(self):
+        self.assertEqual((), registry.get("vm_usage").required_by_features)
+
     def test_reference_pipelines_have_no_flush(self):
         for pipeline_id in ("subscription_reference", "location_reference"):
             descriptor = registry.get(pipeline_id)

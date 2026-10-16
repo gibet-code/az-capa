@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from core import settings
+from services import feature_activation
 from storage.scheduler_config_store import SchedulerConfigConflictError, SchedulerConfigStore
 from storage.scheduler_history_store import SchedulerHistoryStore
 from storage.scheduler_state_store import SchedulerStateStore
@@ -77,8 +78,9 @@ def normalize_progress(custom_status: Any) -> dict | None:
         complete = _clamp01(percent / 100) if isinstance(percent, (int, float)) and not isinstance(percent, bool) else None
         completed = custom_status.get("completedSubscriptions")
         total = custom_status.get("totalSubscriptions")
+        action = "reconciled" if custom_status.get("phase") == "reconciliation" else "completed"
         label = (
-            f"{completed}/{total} subscriptions completed"
+            f"{completed}/{total} subscriptions {action}"
             if isinstance(completed, int) and isinstance(total, int)
             else None
         )
@@ -117,7 +119,7 @@ class EffectiveConfig:
 
 @dataclass(frozen=True)
 class StartResult:
-    status: str  # "started" | "busy" | "disabled"
+    status: str  # "started" | "busy" | "disabled" | "not_required"
     instance_id: str | None = None
 
 
@@ -143,12 +145,21 @@ class DataCollectionDispatcher:
         state_store: SchedulerStateStore | None = None,
         history_store: SchedulerHistoryStore | None = None,
         config_store: SchedulerConfigStore | None = None,
+        feature_service: feature_activation.FeatureActivationService | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._state = state_store or SchedulerStateStore()
         self._history = history_store or SchedulerHistoryStore()
         self._config = config_store or SchedulerConfigStore()
+        self._features = feature_service or feature_activation.service
         self._now = clock or (lambda: datetime.now(timezone.utc))
+
+    def collector_required(self, descriptor: PipelineDescriptor) -> bool:
+        if descriptor.required_by_features is None:
+            return True
+        if not descriptor.required_by_features:
+            return False
+        return bool(set(descriptor.required_by_features).intersection(self._features.enabled_ids()))
 
     # ── configuration merge (registry defaults ← SchedulerConfig row) ──────────
     def effective_config(self, descriptor: PipelineDescriptor) -> EffectiveConfig:
@@ -186,6 +197,7 @@ class DataCollectionDispatcher:
         pipelines: list[dict] = []
         for descriptor in registry.all_descriptors():
             config = self.effective_config(descriptor)
+            required = self.collector_required(descriptor)
             state = self._state.get(descriptor.id) or {}
             active = state.get("activeInstanceId")
             running = False
@@ -200,7 +212,7 @@ class DataCollectionDispatcher:
                     state = self._state.get(descriptor.id) or {}
             last_dispatched = state.get("lastDispatchedAt")
             next_due = None
-            if config.enabled and last_dispatched and config.frequency_seconds > 0:
+            if required and config.enabled and last_dispatched and config.frequency_seconds > 0:
                 next_due = last_dispatched + timedelta(seconds=config.frequency_seconds)
             pipelines.append(
                 {
@@ -208,6 +220,12 @@ class DataCollectionDispatcher:
                     "name": descriptor.label,
                     "enabled": config.enabled,
                     "canDisable": descriptor.can_disable,
+                    "required": required,
+                    "requiredByFeatures": (
+                        list(descriptor.required_by_features)
+                        if descriptor.required_by_features is not None
+                        else None
+                    ),
                     "supportsFlush": descriptor.supports_flush,
                     "frequencySeconds": config.frequency_seconds,
                     "anchorSeconds": config.anchor_seconds,
@@ -235,6 +253,7 @@ class DataCollectionDispatcher:
         """
         descriptor = registry.get(pipeline_id)  # KeyError → facade maps to 404
         config = self.effective_config(descriptor)
+        required = self.collector_required(descriptor)
         state = self._state.get(pipeline_id) or {}
         active = state.get("activeInstanceId")
         running = False
@@ -249,13 +268,19 @@ class DataCollectionDispatcher:
                 state = self._state.get(pipeline_id) or {}
         last_dispatched = state.get("lastDispatchedAt")
         next_due = None
-        if config.enabled and last_dispatched and config.frequency_seconds > 0:
+        if required and config.enabled and last_dispatched and config.frequency_seconds > 0:
             next_due = last_dispatched + timedelta(seconds=config.frequency_seconds)
         return {
             "id": descriptor.id,
             "name": descriptor.label,
             "enabled": config.enabled,
             "canDisable": descriptor.can_disable,
+            "required": required,
+            "requiredByFeatures": (
+                list(descriptor.required_by_features)
+                if descriptor.required_by_features is not None
+                else None
+            ),
             "supportsFlush": descriptor.supports_flush,
             "frequencySeconds": config.frequency_seconds,
             "anchorSeconds": config.anchor_seconds,
@@ -378,6 +403,9 @@ class DataCollectionDispatcher:
         )
         if orchestrator is None:
             raise ValueError(f"Pipeline {pipeline_id!r} has no {action} orchestrator")
+
+        if action == REFRESH and not self.collector_required(descriptor):
+            return StartResult("not_required")
 
         # Scheduled refresh honors enablement; manual refresh is an admin override.
         if action == REFRESH and trigger == SCHEDULED and not self.effective_config(descriptor).enabled:
@@ -563,6 +591,8 @@ class DataCollectionDispatcher:
         now: datetime,
         started_groups: set[str],
     ) -> bool:
+        if not self.collector_required(descriptor):
+            return False
         config = self.effective_config(descriptor)
         if not config.enabled:
             return False

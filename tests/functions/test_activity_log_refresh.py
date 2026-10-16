@@ -41,6 +41,8 @@ class _Context:
         return self._input
 
     def call_activity(self, name, payload):
+        if name == "activity_log_reconcile":
+            return _SubOrchestrationTask(name, payload)
         return "activity", name, payload
 
     def call_sub_orchestrator(self, name, payload):
@@ -175,13 +177,20 @@ def test_reconcile_failure_reports_partial_result():
         "received": 4, "upserted": 3,
     }
     request = generator.send(second)
-    assert request[0] == "all"
+    assert request[0] == "any"
+    first_reconcile, second_reconcile = request[1]
+    first_reconcile.result = {
+        "subscriptionId": "sub-1", "status": "ok", "reconciled": 2,
+    }
+    request = generator.send(first_reconcile)
+    assert request == ("any", [second_reconcile])
+    second_reconcile.result = {
+        "subscriptionId": "sub-2", "status": "error",
+        "error": "storage reset", "reconciled": 0,
+    }
 
     try:
-        generator.send([
-            {"subscriptionId": "sub-1", "status": "ok", "reconciled": 2},
-            {"subscriptionId": "sub-2", "status": "error", "error": "storage reset", "reconciled": 0},
-        ])
+        generator.send(second_reconcile)
     except StopIteration as completed:
         result = completed.value
     else:
@@ -192,6 +201,46 @@ def test_reconcile_failure_reports_partial_result():
     assert result["committedSubscriptions"] == 2
     assert result["failed"] == 0
     assert result["reconciled"] == 2
+    assert result["reconcileFailed"] == 1
+
+
+def test_reconcile_activity_exception_reports_partial_result():
+    context = _Context()
+    plan = {
+        "action": "load",
+        "reason": "refresh",
+        "deletions": [],
+        "workUnits": [{"subscriptionId": "sub-1", "operations": []}],
+        "operations": [],
+        "maxConcurrency": 1,
+        "replayMaxUnits": 200,
+    }
+    generator = _activity_log_refresh(context)
+
+    assert next(generator) == ("activity", "activity_log_resolve_plan", {})
+    request = generator.send(plan)
+    subscription_task = request[1][0]
+    subscription_task.result = {
+        "subscriptionId": "sub-1",
+        "success": True,
+        "committed": True,
+        "received": 1,
+        "upserted": 1,
+    }
+    request = generator.send(subscription_task)
+    reconcile_task = request[1][0]
+    reconcile_task.result = Exception("activity failed")
+
+    try:
+        generator.send(reconcile_task)
+    except StopIteration as completed:
+        result = completed.value
+    else:
+        raise AssertionError("Activity Log refresh did not complete")
+
+    assert result["status"] == "partial"
+    assert result["committedSubscriptions"] == 1
+    assert result["reconciled"] == 0
     assert result["reconcileFailed"] == 1
 
 
@@ -222,10 +271,14 @@ def test_all_subscription_failures_report_failed_result():
         "upserted": 0,
     }
     request = generator.send(completed_task)
-    assert request[0] == "all"
+    assert request[0] == "any"
+    reconcile_task = request[1][0]
+    reconcile_task.result = {
+        "subscriptionId": "sub-1", "status": "ok", "reconciled": 0,
+    }
 
     try:
-        generator.send([{"subscriptionId": "sub-1", "status": "ok", "reconciled": 0}])
+        generator.send(reconcile_task)
     except StopIteration as completed:
         result = completed.value
     else:
@@ -291,11 +344,17 @@ def test_subscription_pool_refills_one_slot_after_each_completion():
         "received": 1, "upserted": 1,
     }
     request = generator.send(third)
-    assert request[0] == "all"
-    assert context.custom_statuses[-1] == {
+    assert request[0] == "any"
+    assert context.custom_statuses[-2] == {
         "completedSubscriptions": 3,
         "totalSubscriptions": 3,
         "percentCompleted": 100,
+    }
+    assert context.custom_statuses[-1] == {
+        "completedSubscriptions": 0,
+        "totalSubscriptions": 3,
+        "percentCompleted": 0,
+        "phase": "reconciliation",
     }
 
 
@@ -341,4 +400,57 @@ def test_subscription_pool_drains_completion_burst_before_refilling():
         "completedSubscriptions": 2,
         "totalSubscriptions": 5,
         "percentCompleted": 40,
+    }
+
+
+def test_reconciliation_pool_refills_each_completed_slot():
+    context = _Context()
+    plan = {
+        "action": "load",
+        "reason": "incremental",
+        "targetStart": "2026-08-08T00:00:00Z",
+        "targetEnd": "2026-09-07T00:00:00Z",
+        "deletions": [],
+        "workUnits": [
+            {"subscriptionId": f"sub-{index}", "windows": []}
+            for index in range(1, 5)
+        ],
+        "operations": [],
+        "maxConcurrency": 2,
+        "replayMaxUnits": 200,
+    }
+    generator = _activity_log_refresh(context)
+
+    next(generator)
+    request = generator.send(plan)
+    first_collection, second_collection = request[1]
+    first_collection.result = {"subscriptionId": "sub-1", "success": True}
+    second_collection.result = {"subscriptionId": "sub-2", "success": True}
+    request = generator.send(first_collection)
+    collection_timer, third_collection, fourth_collection = request[1]
+    collection_timer.result = None
+    request = generator.send(collection_timer)
+    third_collection.result = {"subscriptionId": "sub-3", "success": True}
+    fourth_collection.result = {"subscriptionId": "sub-4", "success": True}
+    request = generator.send(third_collection)
+
+    first_reconcile, second_reconcile = request[1]
+    assert [task.payload["subscriptionId"] for task in request[1]] == [
+        "sub-1", "sub-2",
+    ]
+
+    first_reconcile.result = {
+        "subscriptionId": "sub-1", "status": "ok", "reconciled": 1,
+    }
+    request = generator.send(first_reconcile)
+
+    reconcile_timer, third_reconcile = request[1]
+    assert reconcile_timer.name == "timer"
+    assert third_reconcile.payload["subscriptionId"] == "sub-3"
+    assert second_reconcile.is_completed is False
+    assert context.custom_statuses[-1] == {
+        "completedSubscriptions": 1,
+        "totalSubscriptions": 4,
+        "percentCompleted": 25,
+        "phase": "reconciliation",
     }

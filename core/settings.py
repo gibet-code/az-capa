@@ -271,6 +271,15 @@ def scheduler_config_table_name() -> str:
     return _get("SCHEDULER_CONFIG_TABLE_NAME", "SchedulerConfig")
 
 
+# ── Feature activation ─────────────────────────────────────
+def feature_activation_table_name() -> str:
+    return _get("FEATURE_ACTIVATION_TABLE_NAME", "FeatureActivation")
+
+
+def feature_activation_l1_ttl_seconds() -> int:
+    return max(_get_int("FEATURE_ACTIVATION_L1_TTL_SECONDS", 60), 1)
+
+
 # ── Storage ───────────────────────────────────────────────
 def blob_storage_endpoint() -> str:
     explicit = _get("BLOB_STORAGE_ENDPOINT") or _get("AzureWebJobsStorage__blobServiceUri")

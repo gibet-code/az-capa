@@ -8,6 +8,7 @@ from unittest.mock import patch
 import azure.functions as func
 
 from functions import _authorization as authorization
+from services import feature_activation
 
 
 def _request(headers: dict[str, str] | None = None) -> func.HttpRequest:
@@ -102,6 +103,16 @@ class AuthorizationTests(unittest.TestCase):
                 _request({"Cookie": f"{authorization.LOCAL_ROLE_COOKIE}=None"})
             )
         self.assertEqual(403, raised.exception.status_code)
+
+    @patch("functions._authorization.feature_activation.service.is_enabled", return_value=False)
+    @patch("functions._authorization.credentials.is_running_locally", return_value=True)
+    def test_feature_policy_rejects_disabled_feature(self, _local, is_enabled):
+        with self.assertRaises(authorization.AuthorizationError) as raised:
+            authorization.require_user(_request(), feature=feature_activation.ALLOCATION_EVENTS)
+
+        self.assertEqual(403, raised.exception.status_code)
+        self.assertEqual("feature_disabled", raised.exception.error)
+        is_enabled.assert_called_once_with(feature_activation.ALLOCATION_EVENTS)
 
 
 if __name__ == "__main__":

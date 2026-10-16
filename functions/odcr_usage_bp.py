@@ -11,6 +11,7 @@ import azure.functions as func
 
 from core import identity
 from services.app_scope import resolve_app_scope
+from services.feature_activation import ODCR
 from . import _authorization as authorization
 from ._app_scope_http import app_scope_error_response
 from services import cr_usage, request_dimensions, zone_mapping
@@ -57,7 +58,7 @@ def _json_response(body: dict, status_code: int = 200) -> func.HttpResponse:
 def odcr_usage_list(req: func.HttpRequest) -> func.HttpResponse:
     """List capacity reservations visible to the signed-in user."""
     try:
-        authorization.require_user(req)
+        authorization.require_user(req, feature=ODCR)
     except authorization.AuthorizationError as exc:
         return authorization.error_response(exc)
     started_at = time.perf_counter()

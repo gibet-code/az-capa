@@ -50,9 +50,10 @@ function app() {
 
     async initializeIdentityPreferencesAndRoute() {
       await this.fetchUser();
+      if (this.user.capabilities.useOdcr) await this.loadFeatureSnapshot();
       this.identityResolved = true;
       this.initializePreferences(this.user);
-      if (this.user.capabilities.useOdcr && this.globalScope.contextFilters.length) {
+      if (this.featureEnabled("odcr") && this.globalScope.contextFilters.length) {
         await this.loadScopeInventory({ reconcileContextFilters: true });
       }
       this.applyRoute();
@@ -65,8 +66,27 @@ function app() {
         this.notificationDrawerOpen = false;
         return;
       }
+      if (
+        this.identityResolved
+        && this.user.capabilities.useOdcr
+        && this.featureLoadError
+        && !(this.user.capabilities.administer && hash.startsWith("settings"))
+      ) {
+        this.page = "feature-unavailable";
+        return;
+      }
       if (this.identityResolved && !this.user.capabilities.administer && (hash === "settings" || hash === "notifications")) {
-        window.location.hash = "#/odcr/coverage";
+        const fallback = this.firstEnabledFeatureRoute();
+        if (fallback) window.location.hash = "#/" + fallback;
+        return;
+      }
+      if (
+        this.identityResolved
+        && ((hash === "allocation-events" && !this.featureEnabled("allocation_events"))
+          || ((hash === "vm" || hash.startsWith("vm/") || hash.startsWith("odcr/")) && !this.featureEnabled("odcr")))
+      ) {
+        const fallback = this.firstEnabledFeatureRoute();
+        if (fallback && fallback !== hash) window.location.hash = "#/" + fallback;
         return;
       }
       if (hash === "notifications" && this.user.capabilities.administer) {
@@ -108,6 +128,7 @@ function app() {
     settingsTabFromSlug(slug) {
       switch (slug) {
         case "app-scope": return "app-scope";
+        case "features": return "features";
         case "data-collection": return "data";
         case "business-context": return "business-context";
         default: return "app";
@@ -199,6 +220,7 @@ function app() {
         this.settings = null;
         this.statuses = Object.fromEntries(Object.keys(this.statuses).map((key) => [key, null]));
         await this.fetchUser();
+        if (this.user.capabilities.useOdcr) await this.loadFeatureSnapshot();
         this.accountMenuOpen = false;
         if (this.user.capabilities.administer) {
           this.loadSettings();
@@ -345,6 +367,7 @@ function app() {
   return applyFeatures(
     root,
     createNotificationsFeature(),
+    createFeatureActivationFeature(),
     createAdministrationFeature(),
     createAllocationEventsFeature(),
     createDataCollectionFeature(),
