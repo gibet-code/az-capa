@@ -5,6 +5,10 @@
 Current implemented frontend and API contract. The implementation checklist at
 the end is retained only as a verification summary.
 
+CR collection re-queries a configurable 40-day rolling window and reconciles
+corrected or removed usage after complete retrieval. This does not change the
+30-day display window. See [collection configuration](../operations/environment-variables.md#capacity-reservation-usage-reconciliation).
+
 ## Goal
 
 Add a view selector to ODCR Usage:

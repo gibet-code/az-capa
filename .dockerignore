@@ -1,4 +1,5 @@
 .git
+.azurite-standalone
 .gitignore
 .pytest_cache
 .python_packages

@@ -50,6 +50,7 @@ def run_refresh(context: df.DurableOrchestrationContext, names: dict):
 
     ``names`` maps the logical steps to this pipeline's activity names:
     ``resolve``, ``delete_subscriptions``, ``fetch_page``, ``write_state``.
+    Rolling-refresh plans additionally call ``reconcile`` after complete retrieval.
     """
     plan = yield context.call_activity(names["resolve"], {})
     if plan["action"] == "fail":
@@ -68,7 +69,11 @@ def run_refresh(context: df.DurableOrchestrationContext, names: dict):
     # runs each stream's pages one at a time, waiting out 429s with a durable
     # timer and persisting every page as it lands.
     results = []
-    for item in work_units:
+    for index, item in enumerate(work_units):
+        refresh = (
+            {"refreshId": f"{context.instance_id}:{index}", "subscriptionIds": item["subscriptionIds"]}
+            if plan.get("reconcile") else {}
+        )
         outcome = {"scope": item["scope"], "start": item["start"], "end": item["end"], "success": True, "upserted": 0}
         for stream in streams:
             next_link = None
@@ -83,6 +88,7 @@ def run_refresh(context: df.DurableOrchestrationContext, names: dict):
                     "aggs": stream["aggs"],
                     "kind": stream["kind"],
                     "nextLink": next_link,
+                    **refresh,
                 }
                 res = yield context.call_activity(names["fetch_page"], page_input)
                 status = res.get("status")
@@ -106,6 +112,12 @@ def run_refresh(context: df.DurableOrchestrationContext, names: dict):
                     break
             if not outcome["success"]:
                 break
+        if outcome["success"] and refresh:
+            reconciled = yield context.call_activity(
+                names["reconcile"],
+                {"start": item["start"], "end": item["end"], **refresh},
+            )
+            deleted_rows += reconciled["deleted"]
         results.append(outcome)
 
     failures = [r for r in results if not r.get("success")]

@@ -167,8 +167,12 @@ class UsageStore:
                 entity["Currency"] = rec["currency"]
             if "uptimeHours" in rec:
                 entity["UptimeHours"] = float(rec.get("uptimeHours") or 0.0)
+                if rec.get("refreshId"):
+                    entity["HoursRefreshId"] = rec["refreshId"]
             if "cost" in rec:
                 entity["Cost"] = float(rec.get("cost") or 0.0)
+                if rec.get("refreshId"):
+                    entity["CostRefreshId"] = rec["refreshId"]
             by_partition.setdefault(pk, []).append(entity)
 
         table = self._data_table()
@@ -183,6 +187,100 @@ class UsageStore:
         self._upsert_summary_records(records)
         logging.info("Upserted %d daily usage record(s).", written)
         return written
+
+    def reconcile_window(
+        self, start: str, end: str, refresh_id: str, subscription_ids: list[str] | None
+    ) -> dict:
+        """Remove metrics absent from a fully retrieved refresh, preserving older dates."""
+        if not refresh_id or start > end:
+            raise ValueError("Reconciliation requires a refresh ID and an ordered date window.")
+        table = self._data_table()
+        subscriptions = None if subscription_ids is None else set(subscription_ids)
+        operations: dict[str, list] = {}
+        corrections = []
+        deleted = 0
+        updated = 0
+        rows = table.query_entities(
+            "UsageDate ge @start and UsageDate le @end",
+            parameters={"start": start, "end": end},
+        )
+        for entity in rows:
+            if subscriptions is not None and entity.get("SubscriptionId") not in subscriptions:
+                continue
+            hours_current = entity.get("HoursRefreshId") == refresh_id
+            cost_current = entity.get("CostRefreshId") == refresh_id
+            if hours_current and cost_current:
+                continue
+            correction = {
+                "resourceId": entity["ResourceId"],
+                "subscriptionId": entity["SubscriptionId"],
+                "date": entity["UsageDate"],
+                "currency": entity.get("Currency"),
+            }
+            replacement = {
+                "PartitionKey": entity["PartitionKey"],
+                "RowKey": entity["RowKey"],
+            }
+            if not hours_current:
+                correction["uptimeHours"] = 0.0
+                replacement.update(UptimeHours=0.0, HoursRefreshId=refresh_id)
+            if not cost_current:
+                correction["cost"] = 0.0
+                replacement.update(Cost=0.0, CostRefreshId=refresh_id)
+            corrections.append(correction)
+            if not hours_current and not cost_current:
+                operation = ("delete", {
+                    "PartitionKey": entity["PartitionKey"], "RowKey": entity["RowKey"],
+                })
+                deleted += 1
+            else:
+                operation = ("upsert", replacement, {"mode": UpdateMode.MERGE})
+                updated += 1
+            operations.setdefault(entity["PartitionKey"], []).append(operation)
+
+        # Clear projections before deleting canonical rows, so an interrupted
+        # cleanup can still discover and retry every outstanding correction.
+        self._clear_summary_metrics(corrections)
+        for partition_operations in operations.values():
+            for offset in range(0, len(partition_operations), _MAX_BATCH):
+                submit_table_transaction(table, partition_operations[offset:offset + _MAX_BATCH])
+        logging.info("Reconciled usage [%s..%s]: deleted=%d, corrected=%d.", start, end, deleted, updated)
+        return {"deleted": deleted, "corrected": updated}
+
+    def _clear_summary_metrics(self, records: list[dict]) -> None:
+        table = self._summary_table()
+        if table is None:
+            return
+        entities: dict[tuple[str, str], dict] = {}
+        changed = set()
+        for record in records:
+            key = (record["subscriptionId"], resource_partition_key(record["resourceId"]))
+            if key not in entities:
+                try:
+                    entities[key] = dict(table.get_entity(*key))
+                except ResourceNotFoundError:
+                    entities[key] = {}
+            entity = entities[key]
+            usage_date = datetime.strptime(record["date"], "%Y-%m-%d").date()
+            suffix = f"{usage_date.toordinal() % _SUMMARY_DAYS:02d}"
+            for metric, prefix in (("uptimeHours", "Hours"), ("cost", "Cost")):
+                date_key = f"{prefix}Date{suffix}"
+                if metric in record and entity.get(date_key) == record["date"]:
+                    entity.pop(date_key)
+                    entity.pop(f"{prefix}{suffix}", None)
+                    changed.add(key)
+        by_partition: dict[str, list] = {}
+        for key in sorted(changed):
+            entity = entities[key]
+            if any(name.startswith(("HoursDate", "CostDate")) for name in entity):
+                entity["UpdatedAt"] = datetime.now(timezone.utc)
+                operation = ("upsert", entity, {"mode": UpdateMode.REPLACE})
+            else:
+                operation = ("delete", {"PartitionKey": key[0], "RowKey": key[1]})
+            by_partition.setdefault(key[0], []).append(operation)
+        for operations in by_partition.values():
+            for offset in range(0, len(operations), _MAX_BATCH):
+                submit_table_transaction(table, operations[offset:offset + _MAX_BATCH])
 
     def _upsert_summary_records(self, records: list[dict]) -> None:
         """MERGE the newest 30 daily values into the optional read projection."""

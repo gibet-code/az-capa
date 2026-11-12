@@ -1,10 +1,8 @@
 """Generic daily-usage refresh pipeline (scope resolution, planning, paging).
 
-The VM usage and capacity-reservation pipelines are identical except for the
-Cost Management *filter* they query with and the *tables* they persist to. This
-module captures everything they share; a concrete pipeline is just a
-:class:`RefreshPipeline` constructed with a filter-builder callable and a
-:class:`~storage.usage_store.UsageStore`.
+The VM usage and capacity-reservation pipelines share scope resolution, paging,
+and storage. Capacity reservations additionally opt into rolling refresh and
+reconciliation to recover late billing data.
 
 The durable triggers stay thin: they drive the orchestrator, which calls the
 pipeline's activity bodies (:meth:`RefreshPipeline.resolve_plan`,
@@ -233,14 +231,20 @@ def _new_state(scope: dict, coverage_start: date, coverage_end: date) -> dict:
 class RefreshPipeline:
     """One daily-usage pipeline: a Cost Management filter + a backing store.
 
-    The only per-pipeline differences are ``build_filter`` (the meter/resource
-    filter) and ``store`` (the tables). Everything else — scope resolution,
-    planning, reconcile, paging and flush — is shared.
+    ``refresh_window_days`` opts into rolling reloads and reconciliation; without
+    it, collection retains the forward-only behavior used by VM usage.
     """
 
-    def __init__(self, build_filter: FilterBuilder, store: UsageStore) -> None:
+    def __init__(
+        self,
+        build_filter: FilterBuilder,
+        store: UsageStore,
+        *,
+        refresh_window_days: Callable[[], int] | None = None,
+    ) -> None:
         self._build_filter = build_filter
         self._store = store
+        self._refresh_window_days = refresh_window_days
 
     # ── Work-unit + plan builders ─────────────────────────────────────────────
     def _work_units(self, scope: dict, subs, start: date, end: date) -> list[dict]:
@@ -257,7 +261,8 @@ class RefreshPipeline:
             return [
                 {"scope": build_scope(METHOD_PER_SUB, subscription_id=sub),
                  "filter": self._build_filter(),
-                 "start": s, "end": e}
+                 "start": s, "end": e,
+                 **({"subscriptionIds": [sub]} if self._refresh_window_days else {})}
                 for sub in subs
             ]
         billing_scope = build_scope(METHOD_PER_BILLING, billing_account_id=scope["billingAccount"],
@@ -267,6 +272,7 @@ class RefreshPipeline:
             "scope": billing_scope,
             "filter": self._build_filter(subscription_ids=sub_filter),
             "start": s, "end": e,
+            **({"subscriptionIds": sub_filter} if self._refresh_window_days else {}),
         }]
 
     def _plan(self, scope, streams, agreement, loads, deletions, new_state, reason) -> dict:
@@ -281,6 +287,7 @@ class RefreshPipeline:
             "streams": streams,
             "agreement": agreement,
             "newState": new_state,
+            **({"reconcile": True} if self._refresh_window_days else {}),
         }
 
     def _fail(self, state: dict, scope: dict, reason: str) -> dict:
@@ -301,11 +308,17 @@ class RefreshPipeline:
         agreement = settings.cost_management_agreement_type()
         streams = refresh_streams(agreement)
         W = _end_date()
+        rolling_start = (
+            W - timedelta(days=self._refresh_window_days() - 1)
+            if self._refresh_window_days else None
+        )
         state = self._store.get_state()
 
         # 1. No prior dataset -> full-window load (the implicit "Full").
         if state is None:
             start = _historical_start(W)
+            if rolling_start is not None:
+                start = min(start, rolling_start)
             return self._plan(scope, streams, agreement, [(scope["subs"], start, W)], [],
                               _new_state(scope, start, W), "initial-full")
 
@@ -321,7 +334,8 @@ class RefreshPipeline:
         # A newly introduced materialized read projection has no data even when
         # the canonical daily dataset is current. Re-read only its bounded
         # 30-day window once, then publish the projection version in state.
-        if not self._store.projection_is_current(state):
+        projection_current = self._store.projection_is_current(state)
+        if not projection_current and rolling_start is None:
             projection_start = max(p_start, W - timedelta(days=29))
             return self._plan(
                 scope,
@@ -331,6 +345,30 @@ class RefreshPipeline:
                 [],
                 _new_state(scope, p_start, max(p_end, W)),
                 "projection-rebuild",
+            )
+
+        if rolling_start is not None:
+            if not projection_current:
+                rolling_start = min(rolling_start, W - timedelta(days=29))
+            coverage_start = min(p_start, rolling_start)
+            refresh_start = min(p_end + timedelta(days=1), rolling_start)
+            if P is None and N is None:
+                return self._plan(
+                    scope, streams, agreement, [(None, refresh_start, W)], [],
+                    _new_state(scope, coverage_start, max(p_end, W)), "refresh-all",
+                )
+            added = sorted(set(N) - set(P))
+            removed = sorted(set(P) - set(N))
+            kept = sorted(set(N) & set(P))
+            loads = []
+            if added:
+                loads.append((added, coverage_start, W))
+            if kept:
+                loads.append((kept, refresh_start, W))
+            return self._plan(
+                scope, streams, agreement, loads, removed,
+                _new_state(scope, coverage_start, max(p_end, W)),
+                "reconcile" if added or removed else "refresh",
             )
 
         # 3. ALL -> ALL: forward-gap the whole profile.
@@ -422,13 +460,44 @@ class RefreshPipeline:
             if res["status"] != "ok":
                 return res  # throttled / error — passed straight to the orchestrator
             payload = res["payload"]
-            records = map_page_records(rows_from_payload(payload), kind)
+            refresh_id = page_input.get("refreshId")
+            if refresh_id:
+                props = payload.get("properties") or {}
+                columns = props.get("columns") or []
+                required = {"ResourceId", "UsageDate", *aggs}
+                if (
+                    not required.issubset({column.get("name") for column in columns})
+                    or not isinstance(props.get("rows"), list)
+                    or any(len(row) != len(columns) for row in props["rows"])
+                ):
+                    raise ValueError("Invalid Cost Management response; reconciliation refused.")
+            rows = rows_from_payload(payload)
+            records = map_page_records(rows, kind)
+            if refresh_id:
+                if len(records) != len(rows):
+                    raise ValueError("Invalid usage rows; reconciliation refused.")
+                for record in records:
+                    usage_date = _fmt(_parse_date(record["date"]))
+                    subscriptions = page_input.get("subscriptionIds")
+                    if (
+                        not record["subscriptionId"]
+                        or not page_input["start"] <= usage_date <= page_input["end"]
+                        or (subscriptions is not None and record["subscriptionId"] not in subscriptions)
+                    ):
+                        raise ValueError("Usage row outside the requested boundary; reconciliation refused.")
+                    record["refreshId"] = refresh_id
             upserted = self._store.upsert_daily_records(records, merge=True)
             return {"status": "ok", "upserted": upserted, "nextLink": page_next_link(payload)}
         except Exception as exc:  # noqa: BLE001 — reported back, not swallowed
             logging.error("fetch_and_store_page failed for scope %s [%s..%s]: %s",
                           scope, page_input.get("start"), page_input.get("end"), exc)
             return {"status": "error", "error": str(exc)}
+
+    def reconcile_window(self, request: dict) -> dict:
+        return self._store.reconcile_window(
+            request["start"], request["end"], request["refreshId"],
+            request["subscriptionIds"],
+        )
 
     # ── Activity: delete a set of subscriptions' rows (scope shrink) ──────────
     def delete_subscriptions(self, sub_ids: list) -> dict:

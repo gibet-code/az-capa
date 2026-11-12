@@ -30,6 +30,7 @@
     "VM_USAGE_CHECKPOINT_TABLE_NAME": "VmUsageCheckpoints",
 
     "// capacity reservation usage": "Unused capacity-reservation daily usage pipeline (shares USAGE_HISTORICAL_DAYS).",
+    "CR_USAGE_REFRESH_WINDOW_DAYS": "40",
     "CR_USAGE_TABLE_NAME": "CrDailyUsage",
     "CR_USAGE_CHECKPOINT_TABLE_NAME": "CrUsageCheckpoints",
     "CR_USAGE_SUMMARY_TABLE_NAME": "CrUsageSummaries",

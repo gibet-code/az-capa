@@ -70,6 +70,7 @@ param privateDnsManagement = 'Deploy'
 | `VM_USAGE_TABLE_NAME` | `VmDailyUsage` | Not shipped | Code default |
 | `VM_USAGE_CHECKPOINT_TABLE_NAME` | `VmUsageCheckpoints` | Not shipped | Code default |
 | `CR_USAGE_TABLE_NAME` | `CrDailyUsage` | Not shipped | Code default |
+| `CR_USAGE_REFRESH_WINDOW_DAYS` | `40`, positive integer | Not shipped | CR-only rolling refresh and reconciliation window |
 | `CR_USAGE_CHECKPOINT_TABLE_NAME` | `CrUsageCheckpoints` | Not shipped | Code default |
 | `CR_USAGE_SUMMARY_TABLE_NAME` | `CrUsageSummaries` | Not shipped | Code default |
 | `ACTIVITY_LOG_HISTORICAL_DAYS` | `30`, clamped to 1-89 | Not shipped | Code default |
@@ -106,6 +107,24 @@ param privateDnsManagement = 'Deploy'
 | `SCHEDULER_CONFIG_TABLE_NAME` | `SchedulerConfig` | Removed (`SchedulerConfig`) | Redundant default |
 | `FEATURE_ACTIVATION_TABLE_NAME` | `FeatureActivation` | Removed (`FeatureActivation`) | Redundant default |
 | `FEATURE_ACTIVATION_L1_TTL_SECONDS` | `60`, minimum 1 | Removed (`60`) | Redundant default |
+
+### Capacity reservation usage reconciliation
+
+CR refreshes re-query `CR_USAGE_REFRESH_WINDOW_DAYS` inclusive days ending at
+today (UTC) minus `COST_FINALIZATION_LAG_DAYS`. Initial loads collect at least
+this window; longer collection gaps are also fetched. VM usage remains
+forward-only. The 30-day usage visualization is unchanged.
+
+Each CR page stamps the metrics it returns with a refresh-specific ID. Only
+after all pages and metric streams of a work unit succeed does reconciliation
+remove absent daily rows or zero an absent metric, correcting summary values
+as well. Failed retrievals never trigger this cleanup. Successful empty query
+results are authoritative for that window. Older dates outside the query are
+preserved. Cleanup is retryable; partial page updates remain visible as with
+the existing refresh pipeline.
+
+Deploying this change requires no flush: the next CR refresh repairs the rolling
+window in place. Missing data outside the window requires a separate backfill.
 
 ## Storage and identity reads
 

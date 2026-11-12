@@ -2,9 +2,8 @@
 filter, wired to the generic :class:`~services.usage_refresh.RefreshPipeline` over
 the capacity-reservation usage tables.
 
-Mirrors :mod:`services.vm_usage`; the only CR-specific piece is
-:func:`build_cr_filter`. Everything else (scope resolution, planning, paging,
-flush) is shared through :class:`RefreshPipeline`.
+Shares scope resolution, planning, paging, and flush with :mod:`services.vm_usage`,
+but opts into rolling refresh and reconciliation in :class:`RefreshPipeline`.
 """
 from __future__ import annotations
 
@@ -47,7 +46,9 @@ _store = UsageStore(
 
 # The single object the durable triggers delegate to (resolve_plan, status,
 # fetch_and_store_page, delete_subscriptions, write_state, flush_*).
-pipeline = RefreshPipeline(build_cr_filter, _store)
+pipeline = RefreshPipeline(
+    build_cr_filter, _store, refresh_window_days=settings.cr_usage_refresh_window_days
+)
 
 USAGE_FIELDS = (
     "unusedHours",

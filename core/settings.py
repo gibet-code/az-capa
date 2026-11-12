@@ -125,6 +125,17 @@ def vm_usage_checkpoint_table_name() -> str:
 
 
 # ── Capacity reservation usage pipeline ───────────────────────────────────────
+def cr_usage_refresh_window_days() -> int:
+    raw = _get("CR_USAGE_REFRESH_WINDOW_DAYS", "40")
+    try:
+        days = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("CR_USAGE_REFRESH_WINDOW_DAYS must be a positive integer.") from exc
+    if days < 1:
+        raise ValueError("CR_USAGE_REFRESH_WINDOW_DAYS must be a positive integer.")
+    return days
+
+
 def cr_usage_table_name() -> str:
     return _get("CR_USAGE_TABLE_NAME", "CrDailyUsage")
 

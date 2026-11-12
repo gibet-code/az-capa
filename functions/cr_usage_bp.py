@@ -11,6 +11,7 @@ _NAMES = {
     "resolve": "cr_usage_resolve_plan",
     "delete_subscriptions": "cr_usage_delete_subscriptions",
     "fetch_page": "cr_usage_fetch_page",
+    "reconcile": "cr_usage_reconcile_window",
     "write_state": "cr_usage_write_state",
     "flush_delete": "cr_usage_flush_delete",
     "flush_ensure": "cr_usage_flush_ensure",
@@ -37,6 +38,11 @@ def cr_usage_resolve_plan(request: dict) -> dict:
 @bp.activity_trigger(input_name="pageInput")
 def cr_usage_fetch_page(pageInput: dict) -> dict:
     return cr_usage.pipeline.fetch_and_store_page(pageInput)
+
+
+@bp.activity_trigger(input_name="request")
+def cr_usage_reconcile_window(request: dict) -> dict:
+    return cr_usage.pipeline.reconcile_window(request)
 
 
 @bp.activity_trigger(input_name="subIds")

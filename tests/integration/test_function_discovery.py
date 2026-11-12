@@ -20,6 +20,7 @@ def test_all_blueprint_families_are_discoverable():
         "data_collection_action",
         "data_collection_config",
         "record_run_outcome",
+        "cr_usage_reconcile_window",
         "context_fields",
         "allocation_event_vms",
         "odcr_usage_list",

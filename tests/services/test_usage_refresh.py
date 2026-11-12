@@ -4,6 +4,9 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from core import settings
 from core.settings import METHOD_PER_BILLING, METHOD_PER_SUB
 from services.usage_refresh import (
     REFUSE_BOUNDARY,
@@ -247,3 +250,124 @@ def test_activity_delegates_return_store_results_and_fetch_errors_are_stable():
             "kind": "cost",
         })
     assert result == {"status": "error", "error": "token failed"}
+
+
+@pytest.mark.parametrize("end,start", [
+    (date(2026, 11, 10), "2026-10-02"),
+    (date(2026, 1, 5), "2025-11-27"),
+    (date(2028, 3, 5), "2028-01-26"),
+])
+def test_cr_refreshes_exactly_40_days_even_when_current(end, start):
+    scope = _scope(METHOD_PER_BILLING, None, "account", "profile")
+    pipeline, store, build_filter = _pipeline(_state(scope, start="2025-01-01", end=end.isoformat()))
+    pipeline = RefreshPipeline(build_filter, store, refresh_window_days=lambda: 40)
+    with (
+        patch("services.usage_refresh._resolve_scope", return_value=scope),
+        patch("services.usage_refresh._end_date", return_value=end),
+    ):
+        plan = pipeline.resolve_plan({})
+    assert plan["reconcile"] is True
+    assert plan["workUnits"][0]["start"] == start
+    assert plan["workUnits"][0]["end"] == end.isoformat()
+    assert plan["workUnits"][0]["subscriptionIds"] is None
+    assert plan["newState"]["coverageStart"] == "2025-01-01"
+
+
+def test_cr_initial_load_collects_at_least_40_days_and_vm_stays_at_30():
+    pipeline, store, build_filter = _pipeline()
+    cr = RefreshPipeline(build_filter, store, refresh_window_days=lambda: 40)
+    cr_plan = _resolve(cr, _scope(subs=["sub-a"]))
+    vm_plan = _resolve(pipeline, _scope(subs=["sub-a"]))
+    assert cr_plan["workUnits"][0]["start"] == "2026-07-23"
+    assert cr_plan["workUnits"][0]["subscriptionIds"] == ["sub-a"]
+    assert vm_plan["workUnits"][0]["start"] == "2026-08-02"
+    assert "reconcile" not in vm_plan
+
+
+def test_cr_refresh_includes_long_forward_gaps():
+    scope = _scope(METHOD_PER_BILLING, None, "account", "profile")
+    _, store, build_filter = _pipeline(_state(scope, start="2026-01-01", end="2026-06-01"))
+    pipeline = RefreshPipeline(build_filter, store, refresh_window_days=lambda: 40)
+    plan = _resolve(pipeline, scope)
+    assert plan["workUnits"][0]["start"] == "2026-06-02"
+
+
+def test_cr_extends_existing_coverage_backwards_and_reconciles_subscription_scope():
+    old = _scope(subs=["sub-a", "sub-b"])
+    current = _scope(subs=["sub-b", "sub-c"])
+    _, store, build_filter = _pipeline(_state(old, start="2026-08-20", end="2026-08-29"))
+    pipeline = RefreshPipeline(build_filter, store, refresh_window_days=lambda: 40)
+    plan = _resolve(pipeline, current)
+    assert plan["deletions"] == ["sub-a"]
+    assert [unit["subscriptionIds"] for unit in plan["workUnits"]] == [["sub-c"], ["sub-b"]]
+    assert {unit["start"] for unit in plan["workUnits"]} == {"2026-07-23"}
+    assert plan["newState"]["coverageStart"] == "2026-07-23"
+
+
+def test_cr_projection_rebuild_still_reconciles_the_rolling_window():
+    scope = _scope(subs=["sub-a"])
+    _, store, build_filter = _pipeline(_state(scope), projection_current=False)
+    pipeline = RefreshPipeline(build_filter, store, refresh_window_days=lambda: 40)
+    plan = _resolve(pipeline, scope)
+    assert plan["reconcile"] is True
+    assert plan["workUnits"][0]["start"] == "2026-07-23"
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "invalid"])
+def test_cr_window_rejects_invalid_settings(monkeypatch, raw):
+    monkeypatch.setenv("CR_USAGE_REFRESH_WINDOW_DAYS", raw)
+    with pytest.raises(ValueError, match="positive integer"):
+        settings.cr_usage_refresh_window_days()
+
+
+def test_cr_window_defaults_to_40(monkeypatch):
+    monkeypatch.delenv("CR_USAGE_REFRESH_WINDOW_DAYS", raising=False)
+    assert settings.cr_usage_refresh_window_days() == 40
+
+
+@pytest.mark.parametrize("rows,columns", [
+    ([["/subscriptions/sub-a/resource", 20260830, 2.0]], ["ResourceId", "UsageDate", "Cost"]),
+    ([], ["ResourceId"]),
+    ([[None, 20260830, 2.0]], ["ResourceId", "UsageDate", "UsageQuantity"]),
+    ([["/subscriptions/sub-a/resource", 20260830]], ["ResourceId", "UsageDate", "UsageQuantity"]),
+    ([["/subscriptions/sub-b/resource", 20260830, 2.0]], ["ResourceId", "UsageDate", "UsageQuantity"]),
+    ([["/subscriptions/sub-a/resource", 20260901, 2.0]], ["ResourceId", "UsageDate", "UsageQuantity"]),
+])
+def test_cr_refuses_invalid_or_out_of_scope_pages_before_storing(rows, columns):
+    pipeline, store, _ = _pipeline()
+    page = {
+        "scope": "/subscriptions/sub-a", "start": "2026-08-30", "end": "2026-08-31",
+        "filter": None, "exportType": "ActualCost", "aggs": ["UsageQuantity"],
+        "kind": "hours", "refreshId": "run:0", "subscriptionIds": ["sub-a"],
+    }
+    payload = {"properties": {"columns": [{"name": c} for c in columns], "rows": rows}}
+    with (
+        patch("services.usage_refresh.for_backend_operation"),
+        patch("services.usage_refresh.post_query_once", return_value={"status": "ok", "payload": payload}),
+    ):
+        result = pipeline.fetch_and_store_page(page)
+    assert result["status"] == "error"
+    store.upsert_daily_records.assert_not_called()
+
+
+def test_cr_fetch_stamps_valid_records_for_reconciliation():
+    pipeline, store, _ = _pipeline()
+    page = {
+        "scope": "/subscriptions/sub-a", "start": "2026-08-30", "end": "2026-08-31",
+        "filter": None, "exportType": "AmortizedCost", "aggs": ["UsageQuantity", "Cost"],
+        "kind": "both", "refreshId": "run:0", "subscriptionIds": ["sub-a"],
+    }
+    payload = {"properties": {
+        "columns": [{"name": c} for c in ["ResourceId", "UsageDate", "UsageQuantity", "Cost"]],
+        "rows": [["/subscriptions/sub-a/resource", 20260830, 2.0, 3.0]],
+    }}
+    with (
+        patch("services.usage_refresh.for_backend_operation"),
+        patch("services.usage_refresh.post_query_once", return_value={"status": "ok", "payload": payload}),
+    ):
+        result = pipeline.fetch_and_store_page(page)
+    assert result["status"] == "ok"
+    record = store.upsert_daily_records.call_args.args[0][0]
+    assert record["refreshId"] == "run:0"
+    assert record["uptimeHours"] == 2.0
+    assert record["cost"] == 3.0
